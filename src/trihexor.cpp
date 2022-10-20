@@ -11,6 +11,7 @@
 #include <GLES2/gl2.h>
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <math.h>
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
 // To link with VS2010-era libraries, VS2015+ requires linking with legacy_stdio_definitions.lib, which we do using this pragma.
@@ -24,8 +25,659 @@ static void glfw_error_callback(int error, const char* description)
 	fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
+
+#define GRID_MAX (65536)
+
+/* 16-bits { (layers joined 1 bit) ( left connection mode 2 bits  )  }  */
+
+#define TAG_NOTHING (0x0)
+#define TAG_ISOURCE (0x1)
+#define TAG_IDEST   (0x2)
+#define TAG_CONNECT (0x3)
+
+
+
+#define CELL_LOOKUP_BITS (4)
+#define CELL_LOOKUP_NB   (1u << CELL_LOOKUP_BITS)
+#define CELL_LOOKUP_MASK (CELL_LOOKUP_NB - 1u)
+
+#define PAGE_XY_BITS    (4)
+#define PAGE_XY_NB      (1u << PAGE_XY_BITS)
+#define PAGE_X_MASK     (PAGE_XY_NB - 1)
+#define PAGE_INDEX_MASK (PAGE_XY_NB*PAGE_XY_NB - 1)
+
+#define DIR_NUM (8)
+#define DIR_N  (0)
+#define DIR_NE (1)
+#define DIR_E  (2)
+#define DIR_SE (3)
+#define DIR_S  (4)
+#define DIR_SW (5)
+#define DIR_W  (6)
+#define DIR_NW (7)
+static int dir_get_opposing(int dir) {
+	return dir ^ 4;
+}
+
+#define EDGE_TYPE_NUM       (6)
+#define EDGE_TYPE_NOTHING   (0)
+#define EDGE_TYPE_RECEIVER  (1)
+#define EDGE_TYPE_SENDER_F  (2)
+#define EDGE_TYPE_SENDER_I  (3)
+#define EDGE_TYPE_SENDER_DF (4)
+#define EDGE_TYPE_SENDER_DI (5)
+
+#define EDGE_DIR_N  (DIR_N)
+#define EDGE_DIR_NE (DIR_NE)
+#define EDGE_DIR_SE (DIR_SE)
+#define EDGE_DIR_S  (DIR_S)
+#define EDGE_DIR_SW (DIR_SW)
+#define EDGE_DIR_NW (DIR_NW)
+
+#define VERTEX_DIR_NE (DIR_NE)
+#define VERTEX_DIR_E  (DIR_E)
+#define VERTEX_DIR_SE (DIR_SE)
+#define VERTEX_DIR_SW (DIR_SW)
+#define VERTEX_DIR_W  (DIR_W)
+#define VERTEX_DIR_NW (DIR_NW)
+
+
+
+
+#define REGISTER_FILE_BITS (16)
+
+/*
+ 0000 z  - zero the bit state
+ 0001 l  - load the bit state from the IO register file
+ 0002 o  - bitwise OR the bit at the address into the state
+ 0003 i  - bitwise OR the inverse of the bit at the address into the state
+ 0004 od - bitwise OR the previous bit at the address into the state
+ 0005 id - bitwise OR the inverse of the previous bit at the address into the state
+ 0006 w  - write bit state to the given address
+ 0007 s  - store bit state to the IO register file
+
+*/
+
+struct gridcell {
+	/* LSB
+	 * 0..7  - is the index of the cell within the page (2*PAGE_XY_BITS bits)
+
+	 * 8:10  - N_EDGE
+	 * 11:13 - NE_EDGE
+	 * 14:16
+	 * 17:19 - SE_EDGE
+	 * 20:22 - S_EDGE
+	 * 23:25 - SW_EDGE
+	 * 26:28
+	 * 29:31 - NW_EDGE
+
+	 * 24
+	 * 25    - NE_VERTEX
+	 * 26    - E_VERTEX
+	 * 27    - SE_VERTEX
+	 * 28
+	 * 29    - SW_VERTEX
+	 * 30    - W_VERTEX
+	 * 31    - NW_VERTEX
+
+	 * 32    - DELAY_PROCESSOR
+	 * 
+	 * 46    - Link data to register file
+	 * 47    - 0=Read from 1=Write to
+	 * 48:63 - Register file index */
+
+	uint64_t         flags;
+
+};
+
+struct gridaddr {
+	/* two's complement storage 0x80000000, ...., 0xfffffffe, 0xffffffff, 0x0, 0x1, 0x2, ...., 0x7fffffff */
+	uint32_t y;
+	uint32_t x;
+};
+
+
+static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_file, const int line) {
+	if (!condition) {
+		fprintf(stderr, "assertion failure(%s:%d): %s\n", p_file, line, p_cond_str);
+		abort();
+	}
+}
+#define RT_ASSERT(condition_) rt_assert_impl((condition_), #condition_, __FILE__, __LINE__)
+
+#ifndef NDEBUG
+#define DEBUG_EVAL(x_) ((void)(x_))
+#else
+#define DEBUG_EVAL(x_) ((void)0)
+#endif
+
+
+
+//	struct gridpage *p_page = gridcell_get_gridpage(p_cell);
+//	assert(control == (control & 0x7));
+
+/*    ___       ___
+ *   /   \     /   \
+ *  / 0,0 \___/ 0,1 \___
+ *  \     /   \     /   \
+ *   \___/ 1,0 \___/ 1,1 \
+ *   /   \     /   \     /
+ *  / 2,0 \___/ 2,1 \___/
+ *  \     /   \     /   \
+ *   \___/ 3,0 \___/ 3,1 \
+ *       \     /   \     /
+ *        \___/     \___/
+ *
+ * Common rules:
+ *  N   = (y-2,x)
+ *  E   = (y,  x+1)
+ *  S   = (y+2,x)
+ *  W   = (y,  x-1)
+ * 
+ * If y is even:
+ *  NE  = (y-1,x)
+ *  SE  = (y+1,x)
+ *  SW  = (y+1,x-1)
+ *  NW  = (y-1,x-1)
+ * 
+ * If y is odd:
+ *  NE  = (y-1,x+1)
+ *  SE  = (y+1,x+1)
+ *  SW  = (y+1,x)
+ *  NW  = (y-1,x)
+*/
+static int gridaddr_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int direction) {
+	                                    /* N   NE  E   SE  S   SW  W   NW */
+	static const uint32_t y_offsets[8] = {-2, -1,  0,  1,  2,  1,  0, -1}; /* <--- these are good to go */
+	static const uint32_t x_offsets[8] = {0,   0,  1,  0,  0, -1, -1, -1}; /* <--- these require a position dependent offset for correct behaviour */
+	uint32_t iy = p_src->y;
+	uint32_t ix = p_src->x;
+	uint32_t dy = (assert(direction < DIR_NUM), y_offsets[direction]);
+	uint32_t dx = x_offsets[direction] + ((iy & 1) & (unsigned)direction);
+	uint32_t ox = ix + dx;
+	uint32_t oy = iy + dy;
+
+	/* Test for overflow */
+	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
+		return 1;
+
+	p_dest->x = ox;
+	p_dest->y = oy;
+	return 0;
+}
+
+
+struct gridpage {
+	struct gridcell   data[PAGE_XY_NB*PAGE_XY_NB];
+	struct gridstate *p_owner;
+	struct gridpage  *lookups[CELL_LOOKUP_NB];
+	struct gridaddr   position; /* position of data[0] in the full grid  */
+	
+
+};
+
+struct gridstate {
+	struct gridpage *p_root;
+
+};
+
+void gridstate_init(struct gridstate *p_gridstate) {
+	p_gridstate->p_root = NULL;
+}
+
+static uint64_t xy_to_id(uint32_t x, uint32_t y) {
+	uint64_t grp = (((uint64_t)y) << 32) | x;
+	uint64_t umix = grp * 8249772677985670961ull;
+	return (umix >> 48) ^ umix;
+}
+
+static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y) {
+	uint64_t umix = (id >> 48) ^ id;
+	uint64_t grp = umix * 7426732773883044305ull;
+	*p_x = (uint32_t)grp;
+	*p_y = (uint32_t)(grp >> 32);
+}
+
+static void verify_gridpage(struct gridpage *p_page) {
+	int i;
+	RT_ASSERT(p_page->p_owner != NULL);
+	RT_ASSERT((p_page->position.x & PAGE_X_MASK) == 0);
+	RT_ASSERT((p_page->position.y & PAGE_X_MASK) == 0);
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++)
+		RT_ASSERT((p_page->data[i].flags & PAGE_INDEX_MASK) == i);
+}
+
+static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
+	struct gridpage **pp_c = &(p_grid->p_root);
+	struct gridpage *p_c   = *pp_c;
+	uint32_t page_x        = p_page_addr->x;
+	uint32_t page_y        = p_page_addr->y;
+	uint64_t page_id;
+	int      i;
+
+	assert((page_x & PAGE_X_MASK) == 0);
+	assert((page_y & PAGE_X_MASK) == 0);
+
+	page_id = xy_to_id(page_x, page_y);
+
+	while (p_c != NULL) {
+		if (p_c->position.x == page_x && p_c->position.y == page_y)
+			return p_c;
+		pp_c    = &(p_c->lookups[page_id & CELL_LOOKUP_MASK]);
+		p_c     = *pp_c;
+		page_id = page_id >> CELL_LOOKUP_BITS;
+	}
+
+	if ((!permit_create) || (p_c = (struct gridpage *)malloc(sizeof(*p_c))) == NULL)
+		return NULL;
+
+	p_c->p_owner    = p_grid;
+	p_c->position.x = page_x;
+	p_c->position.y = page_y;
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		p_c->lookups[i] = NULL;
+	for (i = 0; i < PAGE_XY_NB * PAGE_XY_NB; i++)
+		p_c->data[i].flags = i;
+
+	DEBUG_EVAL(verify_gridpage(p_c));
+
+	*pp_c = p_c;
+	return p_c;
+}
+
+static uint32_t gridaddr_split(struct gridaddr *p_page_addr, const struct gridaddr *p_addr) {
+	p_page_addr->x = p_addr->x & ~(uint32_t)PAGE_X_MASK;
+	p_page_addr->y = p_addr->y & ~(uint32_t)PAGE_X_MASK;
+	return (p_addr->x & PAGE_X_MASK) | ((p_addr->y & PAGE_X_MASK) << PAGE_XY_BITS);
+}
+
+static struct gridcell *gridstate_get_gridcell(struct gridstate *p_grid, const struct gridaddr *p_addr, int permit_create) {
+	struct gridaddr page_addr;
+	uint32_t cell_index = gridaddr_split(&page_addr, p_addr);
+	struct gridpage *p_page = gridstate_get_gridpage(p_grid, &page_addr, permit_create);
+	if (p_page == NULL)
+		return NULL;
+	return &(p_page->data[cell_index]);
+}
+
+/* Given a cell, find the page which it is part of */
+static struct gridpage *gridcell_get_gridpage_and_full_addr(struct gridcell *p_cell, struct gridaddr *p_addr) {
+	uint32_t         page_index = p_cell->flags & PAGE_INDEX_MASK;
+	struct gridpage *p_page = (struct gridpage *)(p_cell - page_index);
+	DEBUG_EVAL(verify_gridpage(p_page));
+	p_addr->x = p_page->position.x | (page_index & PAGE_X_MASK);
+	p_addr->y = p_page->position.y | (page_index >> PAGE_XY_BITS);
+	return p_page;
+}
+
+static struct gridpage *gridpage_get_gridpage(struct gridpage *p_page, const struct gridaddr *p_page_addr, int permit_create) {
+	/* This is a fast path for when the page address is the supplied page. */
+	if (p_page->position.x == p_page_addr->x && p_page->position.y == p_page_addr->y)
+		return p_page;
+	assert(p_page->p_owner != NULL);
+	return gridstate_get_gridpage(p_page->p_owner, p_page_addr, permit_create);
+}
+
+static struct gridcell *gridpage_get_gridcell(struct gridpage *p_page, const struct gridaddr *p_addr, int permit_create) {
+	struct gridaddr page_addr;
+	uint32_t        page_index = gridaddr_split(&page_addr, p_addr);
+	if ((p_page = gridpage_get_gridpage(p_page, &page_addr, permit_create)) == NULL)
+		return NULL;
+	return &(p_page->data[page_index]);
+}
+
+static void gridcell_validate_relationship(struct gridcell *p_local, struct gridcell *p_neighbour, int local_to_neighbour_direction) {
+	int neighbour_to_local_direction = dir_get_opposing(local_to_neighbour_direction);
+	int neighbour_edge_control       = (p_neighbour->flags >> (8 + neighbour_to_local_direction * 3)) & 0x7;
+	int local_edge_control           = (p_local->flags >> (8 + local_to_neighbour_direction * 3)) & 0x7;
+	RT_ASSERT(neighbour_edge_control < EDGE_TYPE_NUM);
+	RT_ASSERT(local_edge_control < EDGE_TYPE_NUM);
+	if (local_edge_control == EDGE_TYPE_RECEIVER) {
+		RT_ASSERT(neighbour_edge_control != EDGE_TYPE_NOTHING);
+		RT_ASSERT(neighbour_edge_control != EDGE_TYPE_RECEIVER);
+	} else if (local_edge_control == EDGE_TYPE_NOTHING) {
+		RT_ASSERT(neighbour_edge_control == EDGE_TYPE_NOTHING);
+	} else {
+		RT_ASSERT(neighbour_edge_control == EDGE_TYPE_RECEIVER);
+	}
+}
+
+static void gridcell_set_edge_flags_adv(struct gridcell *p_cell, struct gridcell *p_neighbour, int direction, int control) {
+	int              self_pos            = 8 + direction * 3;
+	int              neighbour_pos       = 8 + dir_get_opposing(direction) * 3;
+	uint64_t         self_mask           = 0x7llu << self_pos;
+	uint64_t         neighbour_mask      = 0x7llu << neighbour_pos;
+	uint64_t         self_value          = ((uint64_t)control) << self_pos;
+	uint64_t         neighbour_value     = ((uint64_t)((control == EDGE_TYPE_NOTHING) ? EDGE_TYPE_NOTHING : EDGE_TYPE_RECEIVER)) << neighbour_pos;
+	uint64_t         self_old_flags      = p_cell->flags;
+	uint64_t         neighbour_old_flags = p_neighbour->flags;
+	uint64_t         self_new_flags      = (self_old_flags & ~self_mask) | self_value;
+	uint64_t         neighbour_new_flags = (neighbour_old_flags & ~neighbour_mask) | neighbour_value;
+
+	assert(direction != DIR_E && direction != DIR_W && direction < DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
+	DEBUG_EVAL(gridcell_validate_relationship(p_cell, p_neighbour, direction));
+
+	p_neighbour->flags = neighbour_new_flags;
+	p_cell->flags      = self_new_flags;
+}
+
+static struct gridcell *gridcell_get_neighbour(struct gridcell *p_cell, int direction) {
+	struct gridaddr  neighbour_addr;
+	struct gridpage *p_cell_page = gridcell_get_gridpage_and_full_addr(p_cell, &neighbour_addr);
+
+	assert(direction < DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	
+	if (gridaddr_neighbour(&neighbour_addr, &neighbour_addr, direction))
+		return NULL;
+
+	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, 1);
+}
+
+static int gridcell_get_edge_flags(const struct gridcell *p_cell, int direction) {
+	assert(direction != DIR_E && direction != DIR_W); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	return (p_cell->flags >> (8 + direction * 3)) & 0x7;
+}
+
+static int gridcell_set_edge_flags(struct gridcell *p_cell, int direction, int control) {
+	struct gridcell *p_neighbour;
+
+	assert(direction != DIR_E && direction != DIR_W); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
+	
+	if ((p_neighbour = gridcell_get_neighbour(p_cell, direction)) == NULL)
+		return 1;
+
+	gridcell_set_edge_flags_adv(p_cell, p_neighbour, direction, control);
+	return 0;
+}
+
+
+
+
+
+
+/*    ___       ___
+ *   /   \     /   \
+ *  / 0,0 \___/ 0,1 \___
+ *  \     /   \     /   \
+ *   \___/ 1,0 \___/ 1,1 \
+ *   /   \     /   \     /
+ *  / 2,0 \___/ 2,1 \___/
+ *  \     /   \     /   \
+ *   \___/ 3,0 \___/ 3,1 \
+ *       \     /   \     /
+ *        \___/     \___/
+ *
+ * If y is even:
+ *  T   = (y-2,x)
+ *  TL  = (y-1,x-1)
+ *  TR  = (y-1,x)
+ *  BL  = (y+1,x-1)
+ *  BR  = (y+1,x)
+ *  B   = (y+2,x)
+ * If y is odd:
+ *  T   = (y-2,x)
+ *  TL  = (y-1,x)
+ *  TR  = (y-1,x+1)
+ *  BL  = (y+1,x)
+ *  BR  = (y+1,x+1)
+ *  B   = (y+2,x)
+ */
+
+
+
+int gridpage_dump(struct gridpage *p_page, unsigned tree_location, int *p_nodes) {
+	int i, j;
+	int depth = 0;
+
+	if (p_page == NULL)
+		return 0;
+
+	(*p_nodes)++;
+
+#if 0
+	printf("BEGIN PAGE 0x%08x (offset %d, %d)\n", tree_location, p_page->position.x, p_page->position.y);
+
+	for (i = 0; i < PAGE_XY_NB; i++) {
+		for (j = 0; j < PAGE_XY_NB; j++) {
+			printf((p_page->data[i*PAGE_XY_NB+j].flags != i*PAGE_XY_NB+j) ? "*" : " ");
+		}
+		printf("\n");
+	}
+#endif
+
+	for (i = 0; i < CELL_LOOKUP_NB; i++) {
+		int x = gridpage_dump(p_page->lookups[i], (tree_location << CELL_LOOKUP_BITS) | i, p_nodes);
+		if (x > depth)
+			depth = x;
+	}
+
+#if 0
+	printf("END PAGE 0x%08x\n", tree_location);
+#endif
+
+	return depth + 1;
+}
+
+int64_t floor_div(int64_t a, int64_t b) {
+    int64_t d = a / b;
+    return (d * b == a) ? d : (d - ((a < 0) ^ (b < 0)));
+}
+
+#define EDGE_NOTHING      (0)
+#define EDGE_SENDING_F    (1)
+#define EDGE_SENDING_I    (2)
+#define EDGE_SENDING_DF   (3)
+#define EDGE_SENDING_DI   (4)
+#define EDGE_RECEIVING_F  (5)
+#define EDGE_RECEIVING_I  (6)
+#define EDGE_RECEIVING_DF (7)
+#define EDGE_RECEIVING_DI (8)
+
+static int get_edge_connection_type(struct gridcell *p_cell, int edge_direction) {
+	struct gridcell *p_neighbour;
+	switch (gridcell_get_edge_flags(p_cell, edge_direction)) {
+		case EDGE_TYPE_SENDER_F: return EDGE_SENDING_F;
+		case EDGE_TYPE_SENDER_I: return EDGE_SENDING_I;
+		case EDGE_TYPE_SENDER_DF: return EDGE_SENDING_DF;
+		case EDGE_TYPE_SENDER_DI: return EDGE_SENDING_DI;
+		case EDGE_TYPE_RECEIVER:
+			p_neighbour = gridcell_get_neighbour(p_cell, edge_direction);
+			assert(p_neighbour != NULL);
+			switch (gridcell_get_edge_flags(p_neighbour, dir_get_opposing(edge_direction))) {
+				case EDGE_TYPE_SENDER_F: return EDGE_RECEIVING_F;
+				case EDGE_TYPE_SENDER_I: return EDGE_RECEIVING_I;
+				case EDGE_TYPE_SENDER_DF: return EDGE_RECEIVING_DF;
+				case EDGE_TYPE_SENDER_DI: return EDGE_RECEIVING_DI;
+				default:
+					abort();
+			}
+		case EDGE_TYPE_NOTHING:
+			break;
+		default:
+			abort();
+	}
+	return EDGE_NOTHING;
+}
+
+static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, float dvecy, float radius) {
+	static const float r30x = 0.866f;
+	static const float r30y = 0.5f;
+
+	ImDrawList *p_list = ImGui::GetWindowDrawList();
+
+	ImDrawListFlags old_flags = p_list->Flags;
+	p_list->Flags = ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines;
+
+#define SHAPE_SIZE (0.42f)
+#define ARROW_SIZE (1.1f)
+
+	if (edge_mode_ne) {
+		float mx1 = px + dvecx * (radius*(1.0f-ARROW_SIZE*0.5f));
+		float my1 = py + dvecy * (radius*(1.0f-ARROW_SIZE*0.5f));
+		float mx2 = px + dvecx * (radius*(1.0f+ARROW_SIZE*0.5f));
+		float my2 = py + dvecy * (radius*(1.0f+ARROW_SIZE*0.5f));
+
+		float nvecx  = r30x * dvecx - r30y * dvecy;
+		float nvecy  = r30x * dvecy + r30y * dvecx;
+		float nvecx2 = r30x * dvecx + r30y * dvecy;
+		float nvecy2 = r30x * dvecy - r30y * dvecx;
+
+		float ax1, ay1, ax2, ay2;
+
+		ImU32 c = ImColor(192, 192, 128, 255);
+
+		if  (   edge_mode_ne == EDGE_RECEIVING_DF
+			||  edge_mode_ne == EDGE_RECEIVING_F
+			||  edge_mode_ne == EDGE_RECEIVING_DI
+			||  edge_mode_ne == EDGE_RECEIVING_I
+			) {
+			ax1 = mx1 + nvecx * radius * SHAPE_SIZE;
+			ay1 = my1 + nvecy * radius * SHAPE_SIZE;
+			ax2 = mx1 + nvecx2 * radius * SHAPE_SIZE;
+			ay2 = my1 + nvecy2 * radius * SHAPE_SIZE;
+
+			if  (   edge_mode_ne == EDGE_RECEIVING_DF
+				||  edge_mode_ne == EDGE_RECEIVING_F
+				)
+				p_list->AddTriangleFilled(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
+			else
+				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f);
+
+			mx1 = (ax1 + ax2) * 0.5f;
+			my1 = (ay1 + ay2) * 0.5f;
+		} else if (edge_mode_ne != EDGE_NOTHING) {
+			ax1 = mx2 - nvecx * radius * SHAPE_SIZE;
+			ay1 = my2 - nvecy * radius * SHAPE_SIZE;
+			ax2 = mx2 - nvecx2 * radius * SHAPE_SIZE;
+			ay2 = my2 - nvecy2 * radius * SHAPE_SIZE;
+
+			if  (   edge_mode_ne == EDGE_SENDING_DF
+				||  edge_mode_ne == EDGE_SENDING_F
+				)
+				p_list->AddTriangleFilled(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
+			else
+				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f);
+
+			mx2 = (ax1 + ax2) * 0.5f;
+			my2 = (ay1 + ay2) * 0.5f;
+		}
+
+		if  (   edge_mode_ne == EDGE_SENDING_DF
+			||  edge_mode_ne == EDGE_SENDING_DI
+			) {
+			float r = radius * SHAPE_SIZE * 0.5f;
+			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f);
+			mx1 += dvecx * r * 2.0f;
+			my1 += dvecy * r * 2.0f;
+		
+		} else if
+			(   edge_mode_ne == EDGE_RECEIVING_DF
+			||  edge_mode_ne == EDGE_RECEIVING_DI
+			) {
+			float r = radius * SHAPE_SIZE * 0.5f;
+			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f);
+			mx2 -= dvecx * r * 2.0f;
+			my2 -= dvecy * r * 2.0f;
+		}
+
+		p_list->AddLine(ImVec2(mx1, my1), ImVec2(mx2, my2), c, 2);
+
+
+	}
+
+
+	p_list->Flags = old_flags;
+}
+
+
 int main(int, char**)
 {
+/*
+	int i;
+	for (i = 0; i < 10000000; i++) {
+		uint32_t x = rand();
+		uint32_t y = rand();
+		uint64_t id = xy_to_id(x, y);
+		uint32_t rx, ry;
+		id_to_xy(id, &rx, &ry);
+		//printf("%llu,%u,%u,%u,%u\n", id, x, rx, y, ry);
+		if (rx != x || ry != y)
+			abort();
+	}
+*/
+#if 0
+	int i;
+	int directions[100];
+	struct gridaddr pos;
+	pos.x = 0;
+	pos.y = 0;
+	for (i = 0; i < 100; i++) {
+
+		directions[i] = rand() & 0x7;
+		if (gridaddr_neighbour(&pos, &pos, directions[i]))
+			abort();
+		printf("%d,%d,%d\n", i, pos.x, pos.y);
+	}
+	for (i = 0; i < 100; i++) {
+		if (gridaddr_neighbour(&pos, &pos, dir_get_opposing(directions[(i * 13) % 100])))
+			abort();
+		printf("%d,%d,%d\n", i, pos.x, pos.y);
+	}
+	if (pos.x != 0 || pos.y != 0)
+		abort();
+
+#endif
+#if 1
+	struct gridstate  gs;
+	struct gridaddr   addr;
+	struct gridcell  *p_cell;
+	int i;
+	uint32_t pdir = 0;
+
+	gridstate_init(&gs);
+
+	addr.x = 0;
+	addr.y = 0;
+	if ((p_cell = gridstate_get_gridcell(&gs, &addr, 1)) == NULL)
+		abort();
+
+	for (i = 0; i < 20000; i++) {
+		struct gridcell *p_neighbour;
+		int ctl;
+		int xdir;
+		pdir = rand() % 6;//(pdir * 96 + 32 * (rand() % 6)) / 128;
+
+		switch (pdir) {
+			case 0: xdir = EDGE_DIR_N; break;
+			case 1: xdir = EDGE_DIR_NE; break;
+			case 2: xdir = EDGE_DIR_SE; break;
+			case 3: xdir = EDGE_DIR_S; break;
+			case 4: xdir = EDGE_DIR_SW; break;
+			case 5: xdir = EDGE_DIR_NW; break;
+		}
+		if ((p_neighbour = gridcell_get_neighbour(p_cell, xdir)) == NULL)
+			abort();
+		switch (rand() % 5) {
+			case 0: ctl = EDGE_TYPE_NOTHING; break;
+			case 1: ctl = EDGE_TYPE_SENDER_DF; break;
+			case 2: ctl = EDGE_TYPE_SENDER_DI; break;
+			case 3: ctl = EDGE_TYPE_SENDER_F; break;
+			case 4: ctl = EDGE_TYPE_SENDER_I; break;
+		}
+		gridcell_set_edge_flags_adv(p_cell, p_neighbour, xdir, ctl);
+		// (void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
+		// printf("set edge_flags for node %08x,%08x for direction %d to %d\n", addr.x, addr.y, xdir, ctl);
+		p_cell = p_neighbour;
+	}
+
+	i = 0;
+	printf("DEPTH = %d\n", gridpage_dump(gs.p_root, 1, &i));
+	printf("NODES = %d\n", i);
+
+#endif
+
 	// Setup window
 	glfwSetErrorCallback(glfw_error_callback);
 	if (!glfwInit())
@@ -136,6 +788,7 @@ int main(int, char**)
 
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 			ImGui::End();
+
 		}
 
 		// 3. Show another simple window.
@@ -147,6 +800,180 @@ int main(int, char**)
 				show_another_window = false;
 			ImGui::End();
 		}
+
+
+		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+
+		//ImVec2 vMax = ImGui::GetWindowContentRegionMax();
+		ImGui::Text("hello");
+		ImGui::BeginChild("BottomBar", ImVec2(0,0), false, 0); // Use avail width/height
+
+		ImDrawList *p_list = ImGui::GetWindowDrawList();
+
+		static int64_t tl_x = -7 * 65536; /* scaled by 16 bits */
+		static int64_t tl_y = -7 * 65536; /* scaled by 16 bits */
+
+		/* Radius of a hexagon */
+		static float radius = 40.0f; /* scaled by 16 bits */
+
+		/* The first element we need to draw is this */
+
+		ImVec2 vMin = ImGui::GetWindowContentRegionMin();
+		ImVec2 vMax = ImGui::GetWindowContentRegionMax();
+
+		float window_width = vMax.x - vMin.x;
+		float window_height = vMax.y - vMin.y;
+		uint32_t cell_y = ((uint64_t)tl_y) >> 16;
+		do {
+			int64_t cy = ((int64_t)(int32_t)cell_y) * 65536;
+			float oy = (cy - tl_y) * radius * (0.866f) / 65536.0f;
+
+			if (oy - radius > window_height)
+				break;
+
+			uint32_t cell_x = ((uint64_t)tl_x) >> 16;
+
+			do {
+				int64_t cx = ((int64_t)(int32_t)cell_x) * 65536;
+				float ox = (cx - tl_x) * radius * (3.0f) / 65536.0f;
+
+				if (ox - radius > window_width)
+					break;
+
+				if (cell_y & 0x1) {
+					ox += radius * 1.5f;
+				}
+
+				ImVec2 p = ImGui::GetWindowPos();
+
+				p.x += vMin.x + ox;
+				p.y += vMin.y + oy;
+
+				ImVec2 points[6];
+
+
+				int edge_mode_n = EDGE_NOTHING;
+				int edge_mode_ne = EDGE_NOTHING;
+				int edge_mode_se = EDGE_NOTHING;
+
+				int split_n  = 0;
+				int split_ne = 0;
+				int split_e  = 0;
+				int split_se = 0;
+
+				struct gridaddr addr;
+				addr.x = cell_x;
+				addr.y = cell_y;
+
+				struct gridcell *p_cell = gridstate_get_gridcell(&gs, &addr, 0);
+
+				if (p_cell != NULL) {
+					edge_mode_n  = get_edge_connection_type(p_cell, EDGE_DIR_N);
+					edge_mode_ne = get_edge_connection_type(p_cell, EDGE_DIR_NE);
+					edge_mode_se = get_edge_connection_type(p_cell, EDGE_DIR_SE);
+				}
+
+					/* draw the segments marked X */
+
+					/*    XXX       ___
+					 *   /   X     /   \
+					 *  / 0,0 X---/ 0,1 \___
+					 *  \     X   \     /   \
+					 *   \___X 1,0 \___/ 1,1 \
+					 *   /   \     /   \     /
+					 *  / 2,0 \___/ 2,1 \___/
+					 *  \     /   \     /   \
+					 *   \___/ 3,0 \___/ 3,1 \
+					 *       \     /   \     /
+					 *        \___/     \___/
+					 */
+
+
+				points[0].x = p.x + 1.0f * radius;
+				points[0].y = p.y;
+				points[1].x = p.x + 0.5f * radius;
+				points[1].y = p.y + 0.866f * radius;
+				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
+				draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, 0.433f, radius);
+
+				points[0].x = p.x + 0.5f * radius;
+				points[0].y = p.y + 0.866f * radius;
+				points[1].x = p.x - 0.5f * radius;
+				points[1].y = p.y + 0.866f * radius;
+				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
+				draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, 0.866f, radius);
+
+				points[0].x = p.x + 0.5f * radius;
+				points[0].y = p.y - 0.866f * radius;
+				points[1].x = p.x + 1.0f * radius;
+				points[1].y = p.y;
+				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
+				draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, -0.433f, radius);
+
+				cell_x += 1;
+			} while (1);
+
+			cell_y += 1;
+
+
+
+
+/*
+        -0.5,rt(3)/2   0.5,rt(3)/2
+ -1,0                                1,0
+        -0.5,-rt(3)/2  0.5,-rt(3)/2
+*/
+
+/*    ___       ___
+ *   /   \     /   \
+ *  / 0,0 \___/ 0,1 \___
+ *  \     /   \     /   \
+ *   \___/ 1,0 \___/ 1,1 \
+ *   /   \     /   \     /
+ *  / 2,0 \___/ 2,1 \___/
+ *  \     /   \     /   \
+ *   \___/ 3,0 \___/ 3,1 \
+ *       \     /   \     /
+ *        \___/     \___/
+ */
+
+
+		} while (1);
+
+
+/*
+		ImVec2 points[6];
+
+		ImVec2 p = ImGui::GetWindowPos();
+		
+		p.x+=vMin.x + 10;
+		p.y+=vMin.y + 8.66f;
+
+		points[0].x = p.x + 1.0f * screen_scale;
+		points[0].y = p.y;
+		points[1].x = p.x + 0.5f * screen_scale;
+		points[1].y = p.y + 0.866f * screen_scale;
+		points[2].x = p.x - 0.5f * screen_scale;
+		points[2].y = p.y + 0.866f * screen_scale;
+		points[3].x = p.x - 1.0f * screen_scale;
+		points[3].y = p.y;
+		points[4].x = p.x - 0.5f * screen_scale;
+		points[4].y = p.y - 0.866f * screen_scale;
+		points[5].x = p.x + 0.5f * screen_scale;
+		points[5].y = p.y - 0.866f * screen_scale;
+
+		p_list->AddPolyline(points, 6, ImColor(255, 255, 255, 255), true, 2);
+*/
+		ImGui::EndChild();
+
+
+
+
+
+
+		ImGui::End();
+
+
 
 		// Rendering
 		ImGui::Render();
