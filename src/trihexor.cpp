@@ -1,8 +1,4 @@
-// Dear ImGui: standalone example application for GLFW + OpenGL 3, using programmable pipeline
-// (GLFW is a cross-platform general purpose library for handling windows, inputs, OpenGL/Vulkan/Metal graphics context creation, etc.)
-// If you are new to Dear ImGui, read documentation from the docs/ folder + read the top of imgui.cpp.
-// Read online: https://github.com/ocornut/imgui/tree/master/docs
-
+/* boilerplate for this was taken from one of the imgui examples */
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -10,7 +6,7 @@
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
 #endif
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include <GLFW/glfw3.h>
 #include <math.h>
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
@@ -24,18 +20,6 @@ static void glfw_error_callback(int error, const char* description)
 {
 	fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
-
-
-#define GRID_MAX (65536)
-
-/* 16-bits { (layers joined 1 bit) ( left connection mode 2 bits  )  }  */
-
-#define TAG_NOTHING (0x0)
-#define TAG_ISOURCE (0x1)
-#define TAG_IDEST   (0x2)
-#define TAG_CONNECT (0x3)
-
-
 
 #define CELL_LOOKUP_BITS (4)
 #define CELL_LOOKUP_NB   (1u << CELL_LOOKUP_BITS)
@@ -53,7 +37,6 @@ static void glfw_error_callback(int error, const char* description)
 #define EDGE_TYPE_SENDER_I  (3)
 #define EDGE_TYPE_SENDER_DF (4)
 #define EDGE_TYPE_SENDER_DI (5)
-
 
 struct gridaddr {
 	/* two's complement storage 0x80000000, ...., 0xfffffffe, 0xffffffff, 0x0, 0x1, 0x2, ...., 0x7fffffff */
@@ -89,6 +72,9 @@ static int edge_dir_get_opposing(int dir) {
  *       \     /
  *        \___/
  *
+ * THESE COMMENTS ARE ALL WRONG BECAUSE I INVERTED THE Y AXIS HERE! 2D
+ * COORDINATE SYSTEMS ARE THE WORST AND I AM AN IDIOT.
+ *  
  * For Edges:
  * Common rules:
  *  N   = (y-2,x)
@@ -125,12 +111,12 @@ static int edge_dir_get_opposing(int dir) {
  * */
 static int gridaddr_edge_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int edge_direction) {
 	static const uint32_t y_offsets[6] =
-		{  -2   /* N */
-		,  -1   /* NE */
-		,   1   /* SE */
-		,  -1   /* NW */
-		,   1   /* SW */
-		,   2   /* S */
+		{   2   /* N */
+		,   1   /* NE */
+		,  -1   /* SE */
+		,   1   /* NW */
+		,  -1   /* SW */
+		,  -2   /* S */
 		};
 	static const uint32_t x_offsets[6][2] =
 		/*  y_even  y_odd */
@@ -172,10 +158,10 @@ static int vertex_dir_get_opposing(int dir) {
 static int gridaddr_vertex_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int virtex_direction) {
 	static const uint32_t y_offsets[6] =
 		{   0   /* E */
-		,  -3   /* NE */
-		,   3   /* SE */
-		,   3   /* NW */
-		,  -3   /* SW */
+		,   3   /* NE */
+		,  -3   /* SE */
+		,  -3   /* NW */
+		,   3   /* SW */
 		,   0   /* W */
 		};
 	static const uint32_t x_offsets[6][2] =
@@ -599,7 +585,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 				)
 				p_list->AddTriangleFilled(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f);
+				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40);
 
 			mx1 = (ax1 + ax2) * 0.5f;
 			my1 = (ay1 + ay2) * 0.5f;
@@ -614,7 +600,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 				)
 				p_list->AddTriangleFilled(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f);
+				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40);
 
 			mx2 = (ax1 + ax2) * 0.5f;
 			my2 = (ay1 + ay2) * 0.5f;
@@ -624,7 +610,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 			||  edge_mode_ne == EDGE_SENDING_DI
 			) {
 			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f);
+			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f * radius / 40);
 			mx1 += dvecx * r * 2.0f;
 			my1 += dvecy * r * 2.0f;
 		
@@ -633,7 +619,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 			||  edge_mode_ne == EDGE_RECEIVING_DI
 			) {
 			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f);
+			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f * radius / 40);
 			mx2 -= dvecx * r * 2.0f;
 			my2 -= dvecy * r * 2.0f;
 		}
@@ -646,6 +632,245 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 
 	p_list->Flags = old_flags;
 }
+
+#include "imgui_internal.h"
+
+ImVec2 iv2_add(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
+ImVec2 iv2_sub(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
+
+struct plot_grid_state {
+	float radius;
+	int64_t bl_x; /* scaled by 16 bits */
+	int64_t bl_y; /* scaled by 16 bits */
+	
+	int    mouse_down;
+	ImVec2 mouse_down_pos;
+
+
+};
+
+void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return;
+
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+
+	ImVec2 graph_size;
+	float radius = p_state->radius;
+	graph_size.x = ImGui::CalcItemWidth();
+	graph_size.y = style.FramePadding.y * 2 + 700;
+
+    const ImRect frame_bb(window->DC.CursorPos, iv2_add(window->DC.CursorPos, graph_size));
+    const ImRect inner_bb(iv2_add(frame_bb.Min, style.FramePadding), iv2_sub(frame_bb.Max, style.FramePadding));
+    const ImRect total_bb(frame_bb.Min, frame_bb.Max);
+    ImGui::ItemSize(total_bb, style.FramePadding.y);
+
+	const ImGuiID id = window->GetID((void *)p_st);
+    if (!ImGui::ItemAdd(total_bb, id, &frame_bb, 0))
+        return;
+
+	ImGuiIO& io = ImGui::GetIO();
+    const bool hovered = ImGui::ItemHoverable(inner_bb, id);
+
+	ImVec2 mprel = iv2_sub(io.MousePos, inner_bb.Min);
+
+	int64_t bl_x = p_state->bl_x;
+	int64_t bl_y = p_state->bl_y;
+
+	if (hovered) {
+		int make_active = 0;
+
+		if (g.IO.MouseDown[0] && !p_state->mouse_down) {
+			p_state->mouse_down_pos = mprel;
+			p_state->mouse_down = 1;
+			make_active = 1;
+		}
+
+		if (make_active) {
+			ImGui::SetActiveID(id, window);
+			ImGui::SetFocusID(id, window);
+			ImGui::FocusWindow(window);
+		}
+	}
+
+	if (p_state->mouse_down) {
+		ImVec2 drag = iv2_sub(mprel, p_state->mouse_down_pos);
+
+		bl_x -= drag.x / (radius * 3.0f) * 65536.0f;
+		bl_y += drag.y / (radius * 0.866f) * 65536.0f;
+
+		if (!g.IO.MouseDown[0]) {
+			ImGui::ClearActiveID();
+			p_state->mouse_down = 0;
+			p_state->bl_x = bl_x;
+			p_state->bl_y = bl_y;
+		}
+	}
+
+	if (hovered) {
+		if (io.MouseWheel != 0.0f) {
+			radius *= powf(2.0, io.MouseWheel / 40.0f);
+			if (radius < 3.0f)
+				radius = 3.0f;
+			p_state->radius = radius;
+		}
+	}
+
+
+
+    ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
+
+	ImDrawList *p_list = ImGui::GetWindowDrawList();
+
+    p_list->PushClipRect(inner_bb.Min, inner_bb.Max, true);  // Render-level scissoring. This is passed down to your render function but not used for CPU-side coarse clipping. Prefer using higher-level ImGui::PushClipRect() to affect logic (hit-testing and widget culling)
+
+	ImVec2 vMin = inner_bb.Min;
+	ImVec2 vMax = inner_bb.Max;
+
+	float window_width = vMax.x - vMin.x;
+	float window_height = vMax.y - vMin.y;
+
+	uint32_t cell_y = ((uint64_t)bl_y) >> 16;
+	do {
+		int64_t cy = ((int64_t)(int32_t)cell_y) * 65536;
+		float oy = (cy - bl_y) * radius * (0.866f) / 65536.0f;
+
+		if (oy - radius > window_height)
+			break;
+
+		uint32_t cell_x = ((uint64_t)bl_x) >> 16;
+
+		do {
+			int64_t cx = ((int64_t)(int32_t)cell_x) * 65536;
+			float ox = (cx - bl_x) * radius * (3.0f) / 65536.0f;
+
+			if (ox - radius > window_width)
+				break;
+
+			if (cell_y & 0x1) {
+				ox += radius * 1.5f;
+			}
+
+			ImVec2 p;
+
+			p.x = vMin.x + ox;
+			p.y = vMax.y - oy;
+
+			int edge_mode_n = EDGE_NOTHING;
+			int edge_mode_ne = EDGE_NOTHING;
+			int edge_mode_se = EDGE_NOTHING;
+
+			int tunnel_n = 0;
+			int tunnel_ne = 0;
+			int tunnel_se = 0;
+
+			struct gridaddr addr;
+			addr.x = cell_x;
+			addr.y = cell_y;
+
+			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &addr, 0);
+
+			if (p_cell != NULL) {
+				struct gridcell *p_n;
+				edge_mode_n  = get_edge_connection_type(p_cell, EDGE_DIR_N);
+				edge_mode_ne = get_edge_connection_type(p_cell, EDGE_DIR_NE);
+				edge_mode_se = get_edge_connection_type(p_cell, EDGE_DIR_SE);
+
+				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_NE);
+				if (p_n != NULL) {
+					tunnel_n = gridcell_get_vert_flags(p_n, VERTEX_DIR_W);
+					tunnel_se = gridcell_get_vert_flags(p_n, VERTEX_DIR_SW);
+				}
+
+				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_SE);
+				if (p_n != NULL) {
+					tunnel_ne = gridcell_get_vert_flags(p_n, VERTEX_DIR_NW);
+				}
+
+
+			}
+
+				/* draw the segments marked X */
+
+				/*    XXX       ___             (X,y)
+					*   /   X     /   \
+					*  / 0,0 X___/ 1,0 \___
+					*  \     X   \     /   \
+					*   \___X 0,1 \___/ 1,1 \
+					*   /   \     /   \     /
+					*  / 0,2 \___/ 1,2 \___/
+					*  \     /   \     /   \
+					*   \___/ 0,3 \___/ 1,3 \
+					*       \     /   \     /
+					*        \___/     \___/
+					*/
+
+			ImVec2 inner_n1  = ImVec2(p.x - 0.5f * radius, p.y - 0.866f * radius);
+			ImVec2 inner_n2  = ImVec2(p.x + 0.5f * radius, p.y - 0.866f * radius);
+			ImVec2 inner_ne1 = ImVec2(p.x + 0.5f * radius, p.y - 0.866f * radius);
+			ImVec2 inner_ne2 = ImVec2(p.x + 1.0f * radius, p.y);
+			ImVec2 inner_se1 = ImVec2(p.x + 1.0f * radius, p.y);
+			ImVec2 inner_se2 = ImVec2(p.x + 0.5f * radius, p.y + 0.866f * radius);
+
+			if (tunnel_n) {
+				inner_n1.x  -= 0.2f * radius;
+				inner_n2.x  += 0.2f * radius;
+			}
+			if (tunnel_ne) {
+				inner_ne1.x -= 0.2f * 0.5f * radius;
+				inner_ne1.y -= 0.2f * 0.866f * radius;
+				inner_ne2.x += 0.2f * 0.5f * radius;
+				inner_ne2.y += 0.2f * 0.866f * radius;
+			}
+			if (tunnel_se) {
+				inner_se1.x += 0.2f * 0.5f * radius;
+				inner_se1.y -= 0.2f * 0.866f * radius;
+				inner_se2.x -= 0.2f * 0.5f * radius;
+				inner_se2.y += 0.2f * 0.866f * radius;
+			}
+
+			ImU32 cjoined = ImColor(255, 255, 255, 255);
+			ImU32 cunjoined = ImColor(255, 255, 255, 128);
+			
+
+			p_list->AddLine(inner_n1, inner_n2, tunnel_n ? cjoined : cunjoined,    (2 + tunnel_n * 3) * radius / 40);
+			p_list->AddLine(inner_ne1, inner_ne2, tunnel_ne ? cjoined : cunjoined, (2 + tunnel_ne * 3) * radius / 40);
+			p_list->AddLine(inner_se1, inner_se2, tunnel_se ? cjoined : cunjoined, (2 + tunnel_se * 3) * radius / 40);
+			draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, -0.866f, radius);
+			draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, -0.433f, radius);
+			draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, +0.433f, radius);
+
+			if (cell_x == 0 && cell_y == 0)
+				p_list->AddCircle(p, radius * 0.5, ImColor(192, 0, 0, 255), 17, 2.0f * radius / 40);
+
+			cell_x += 1;
+		} while (1);
+
+		cell_y += 1;
+
+	} while (1);
+
+	p_list->PopClipRect();
+
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+
+
+
+		ImGui::Text("down=%d (lda=%f,%f) ", p_state->mouse_down, mprel.x, mprel.y);
+
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+
+}
+
+
 
 
 int main(int, char**)
@@ -699,16 +924,16 @@ int main(int, char**)
 	if ((p_cell = gridstate_get_gridcell(&gs, &addr, 1)) == NULL)
 		abort();
 
-	for (i = 0; i < 20000; i++) {
+	for (i = 0; i < 2000; i++) {
 		struct gridcell *p_neighbour;
 		int edge_ctl;
-		int edge_dir = rand() % EDGE_DIR_NUM;//(pdir * 16 + 112 * (rand() % EDGE_DIR_NUM)) / 128;
+		int edge_dir = (pdir = (pdir * 16 + 112 * (rand() % EDGE_DIR_NUM) + 64) / 128);
 		int virt_dir = rand() % VERTEX_DIR_NUM;
-		int virt_ctl;
+		int virt_ctl = rand() & 1;
 
 		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir)) == NULL)
 			abort();
-		gridcell_set_vert_flags_adv(p_cell, p_neighbour, virt_dir, rand() & 1);
+		gridcell_set_vert_flags_adv(p_cell, p_neighbour, virt_dir, virt_ctl);
 
 		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir)) == NULL)
 			abort();
@@ -723,8 +948,8 @@ int main(int, char**)
 
 		gridcell_set_edge_flags_adv(p_cell, p_neighbour, edge_dir, edge_ctl);
 
-		// (void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
-		// printf("set edge_flags for node %08x,%08x for direction %d to %d\n", addr.x, addr.y, xdir, ctl);
+		(void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
+		//printf("set edge_flags for node %08x,%08x vdir=%d,%d\n", addr.x, addr.y, virt_dir, virt_ctl);
 		p_cell = p_neighbour;
 	}
 
@@ -804,6 +1029,12 @@ int main(int, char**)
 	bool show_another_window = false;
 	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
+	struct plot_grid_state plot_state;
+	plot_state.radius = 40.0f;
+	plot_state.bl_x = -0 * 65536;
+	plot_state.bl_y = -0 * 65536;
+	plot_state.mouse_down = 0;
+
 	// Main loop
 	while (!glfwWindowShouldClose(window))
 	{
@@ -860,181 +1091,7 @@ int main(int, char**)
 
 		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
 
-		//ImVec2 vMax = ImGui::GetWindowContentRegionMax();
-		ImGui::Text("hello");
-		ImGui::BeginChild("BottomBar", ImVec2(0,0), false, 0); // Use avail width/height
-
-		ImDrawList *p_list = ImGui::GetWindowDrawList();
-
-		static int64_t tl_x = -7 * 65536; /* scaled by 16 bits */
-		static int64_t tl_y = -7 * 65536; /* scaled by 16 bits */
-
-		/* Radius of a hexagon */
-		static float radius = 40.0f; /* scaled by 16 bits */
-
-		/* The first element we need to draw is this */
-
-		ImVec2 vMin = ImGui::GetWindowContentRegionMin();
-		ImVec2 vMax = ImGui::GetWindowContentRegionMax();
-
-		float window_width = vMax.x - vMin.x;
-		float window_height = vMax.y - vMin.y;
-		uint32_t cell_y = ((uint64_t)tl_y) >> 16;
-		do {
-			int64_t cy = ((int64_t)(int32_t)cell_y) * 65536;
-			float oy = (cy - tl_y) * radius * (0.866f) / 65536.0f;
-
-			if (oy - radius > window_height)
-				break;
-
-			uint32_t cell_x = ((uint64_t)tl_x) >> 16;
-
-			do {
-				int64_t cx = ((int64_t)(int32_t)cell_x) * 65536;
-				float ox = (cx - tl_x) * radius * (3.0f) / 65536.0f;
-
-				if (ox - radius > window_width)
-					break;
-
-				if (cell_y & 0x1) {
-					ox += radius * 1.5f;
-				}
-
-				ImVec2 p = ImGui::GetWindowPos();
-
-				p.x += vMin.x + ox;
-				p.y += vMin.y + oy;
-
-				ImVec2 points[6];
-
-
-				int edge_mode_n = EDGE_NOTHING;
-				int edge_mode_ne = EDGE_NOTHING;
-				int edge_mode_se = EDGE_NOTHING;
-
-				int virt_connected_ne = 0;
-				int virt_connected_e = 0;
-				int virt_connected_se = 0;
-				int virt_connected_sw = 0;
-
-				int split_n  = 0;
-				int split_ne = 0;
-				int split_e  = 0;
-				int split_se = 0;
-
-				struct gridaddr addr;
-				addr.x = cell_x;
-				addr.y = cell_y;
-
-				struct gridcell *p_cell = gridstate_get_gridcell(&gs, &addr, 0);
-
-				if (p_cell != NULL) {
-					edge_mode_n  = get_edge_connection_type(p_cell, EDGE_DIR_N);
-					edge_mode_ne = get_edge_connection_type(p_cell, EDGE_DIR_NE);
-					edge_mode_se = get_edge_connection_type(p_cell, EDGE_DIR_SE);
-				}
-
-					/* draw the segments marked X */
-
-					/*    XXX       ___             (X,y)
-					 *   /   X     /   \
-					 *  / 0,0 X---/ 1,0 \___
-					 *  \     X   \     /   \
-					 *   \___X 0,1 \___/ 1,1 \
-					 *   /   \     /   \     /
-					 *  / 0,2 \___/ 1,2 \___/
-					 *  \     /   \     /   \
-					 *   \___/ 0,3 \___/ 1,3 \
-					 *       \     /   \     /
-					 *        \___/     \___/
-					 */
-
-
-				points[0].x = p.x + 1.0f * radius;
-				points[0].y = p.y;
-				points[1].x = p.x + 0.5f * radius;
-				points[1].y = p.y + 0.866f * radius;
-				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
-				draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, 0.433f, radius);
-
-				points[0].x = p.x + 0.5f * radius;
-				points[0].y = p.y + 0.866f * radius;
-				points[1].x = p.x - 0.5f * radius;
-				points[1].y = p.y + 0.866f * radius;
-				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
-				draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, 0.866f, radius);
-
-				points[0].x = p.x + 0.5f * radius;
-				points[0].y = p.y - 0.866f * radius;
-				points[1].x = p.x + 1.0f * radius;
-				points[1].y = p.y;
-				p_list->AddLine(points[0], points[1], ImColor(255, 255, 255, 255), 2);
-				draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, -0.433f, radius);
-
-				cell_x += 1;
-			} while (1);
-
-			cell_y += 1;
-
-
-
-
-/*
-        -0.5,rt(3)/2   0.5,rt(3)/2
- -1,0                                1,0
-        -0.5,-rt(3)/2  0.5,-rt(3)/2
-*/
-
-/*    ___       ___
- *   /   \     /   \
- *  / 0,0 \___/ 0,1 \___
- *  \     /   \     /   \
- *   \___/ 1,0 \___/ 1,1 \
- *   /   \     /   \     /
- *  / 2,0 \___/ 2,1 \___/
- *  \     /   \     /   \
- *   \___/ 3,0 \___/ 3,1 \
- *       \     /   \     /
- *        \___/     \___/
- */
-
-
-		} while (1);
-
-
-/*
-		ImVec2 points[6];
-
-		ImVec2 p = ImGui::GetWindowPos();
-		
-		p.x+=vMin.x + 10;
-		p.y+=vMin.y + 8.66f;
-
-		points[0].x = p.x + 1.0f * screen_scale;
-		points[0].y = p.y;
-		points[1].x = p.x + 0.5f * screen_scale;
-		points[1].y = p.y + 0.866f * screen_scale;
-		points[2].x = p.x - 0.5f * screen_scale;
-		points[2].y = p.y + 0.866f * screen_scale;
-		points[3].x = p.x - 1.0f * screen_scale;
-		points[3].y = p.y;
-		points[4].x = p.x - 0.5f * screen_scale;
-		points[4].y = p.y - 0.866f * screen_scale;
-		points[5].x = p.x + 0.5f * screen_scale;
-		points[5].y = p.y - 0.866f * screen_scale;
-
-		p_list->AddPolyline(points, 6, ImColor(255, 255, 255, 255), true, 2);
-*/
-		ImGui::EndChild();
-
-
-
-
-
-
-		ImGui::End();
-
-
+		plot_grid(&gs, &plot_state);
 
 		// Rendering
 		ImGui::Render();
