@@ -550,7 +550,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 	ImDrawList *p_list = ImGui::GetWindowDrawList();
 
 	ImDrawListFlags old_flags = p_list->Flags;
-	p_list->Flags = ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines;
+	//p_list->Flags = ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines;
 
 #define SHAPE_SIZE (0.42f)
 #define ARROW_SIZE (1.1f)
@@ -585,7 +585,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 				)
 				p_list->AddTriangleFilled(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40);
+				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40.0f);
 
 			mx1 = (ax1 + ax2) * 0.5f;
 			my1 = (ay1 + ay2) * 0.5f;
@@ -600,7 +600,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 				)
 				p_list->AddTriangleFilled(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40);
+				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40.0f);
 
 			mx2 = (ax1 + ax2) * 0.5f;
 			my2 = (ay1 + ay2) * 0.5f;
@@ -610,7 +610,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 			||  edge_mode_ne == EDGE_SENDING_DI
 			) {
 			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f * radius / 40);
+			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f * radius / 40.0f);
 			mx1 += dvecx * r * 2.0f;
 			my1 += dvecy * r * 2.0f;
 		
@@ -619,14 +619,17 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 			||  edge_mode_ne == EDGE_RECEIVING_DI
 			) {
 			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f * radius / 40);
+			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f * radius / 40.0f);
 			mx2 -= dvecx * r * 2.0f;
 			my2 -= dvecy * r * 2.0f;
 		}
 
-		p_list->AddLine(ImVec2(mx1, my1), ImVec2(mx2, my2), c, 2);
+		assert(isnormal(mx1));
+		assert(isnormal(my1));
+		assert(isnormal(mx2));
+		assert(isnormal(my2));
 
-
+		p_list->AddLine(ImVec2(mx1, my1), ImVec2(mx2, my2), c, 2.0f * radius / 40.0f);
 	}
 
 
@@ -675,7 +678,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 	ImGuiIO& io = ImGui::GetIO();
     const bool hovered = ImGui::ItemHoverable(inner_bb, id);
 
-	ImVec2 mprel = iv2_sub(io.MousePos, inner_bb.Min);
+	ImVec2 mprel = ImVec2(io.MousePos.x - inner_bb.Min.x, inner_bb.Max.y - io.MousePos.y);
 
 	int64_t bl_x = p_state->bl_x;
 	int64_t bl_y = p_state->bl_y;
@@ -700,7 +703,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImVec2 drag = iv2_sub(mprel, p_state->mouse_down_pos);
 
 		bl_x -= drag.x / (radius * 3.0f) * 65536.0f;
-		bl_y += drag.y / (radius * 0.866f) * 65536.0f;
+		bl_y -= drag.y / (radius * 0.866f) * 65536.0f;
 
 		if (!g.IO.MouseDown[0]) {
 			ImGui::ClearActiveID();
@@ -712,10 +715,19 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 
 	if (hovered) {
 		if (io.MouseWheel != 0.0f) {
+			bl_x -= -mprel.x / (radius * 3.0f) * 65536.0f;
+			bl_y -= -mprel.y / (radius * 0.866f) * 65536.0f;
+
 			radius *= powf(2.0, io.MouseWheel / 40.0f);
 			if (radius < 3.0f)
 				radius = 3.0f;
 			p_state->radius = radius;
+
+			bl_x -= +mprel.x / (radius * 3.0f) * 65536.0f;
+			bl_y -= +mprel.y / (radius * 0.866f) * 65536.0f;
+
+			p_state->bl_x = bl_x;
+			p_state->bl_y = bl_y;
 		}
 	}
 
