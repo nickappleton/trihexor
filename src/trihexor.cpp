@@ -502,10 +502,12 @@ int gridpage_dump(struct gridpage *p_page, unsigned tree_location, int *p_nodes)
 	return depth + 1;
 }
 
+#if 0
 int64_t floor_div(int64_t a, int64_t b) {
     int64_t d = a / b;
     return (d * b == a) ? d : (d - ((a < 0) ^ (b < 0)));
 }
+#endif
 
 #define EDGE_NOTHING      (0)
 #define EDGE_SENDING_F    (1)
@@ -637,6 +639,66 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 }
 
 #include "imgui_internal.h"
+
+#define ASR(n_, b_) ((n_) >> (b_))
+
+
+void get_cursor_hex_addr(int64_t *p_x, int64_t *p_y, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y) {
+	int64_t thx = bl_x + (int32_t)(cursor_x * 65536.0f / 3.0f);
+	int64_t thy = bl_y + (int32_t)(cursor_y * 65536.0f / 0.866f);
+
+	int64_t nhx     = thx * 3;
+	int64_t nhy     = ASR(thy*113512, 17);
+	int64_t llx     = ASR(thx, 16) * 3*65536;
+	int64_t lly     = ASR(thy, 17) * 113512; /* 113511.681724833942309 = 2.0f*0.866f*65536.0f */;
+	int64_t lln_x   = llx;
+	int64_t lln_y   = lly + 113512;
+	int64_t llne_x  = llx + 98304; /* 98304 = 1.5f*65536.0f */
+	int64_t llne_y  = lly + 56756; /* 56755.840862416971154 = 0.866025403784439*65536.0 */
+	int64_t lle_x   = llx + 196608; /* 196608 = 3.0f*65536.0f */
+	int64_t lle_y   = lly;
+	int64_t llnee_x = llx + 196608;
+	int64_t llnee_y = lly + 113512;
+
+#define SQR(x_) ((x_)*(x_))
+
+	int64_t ell    = SQR(nhx-llx) + SQR(nhy-lly);
+	int64_t elln   = SQR(nhx-lln_x) + SQR(nhy-lln_y);
+	int64_t ellne  = SQR(nhx-llne_x) + SQR(nhy-llne_y);
+	int64_t elle   = SQR(nhx-lle_x) + SQR(nhy-lle_y);
+	int64_t ellnee = SQR(nhx-llnee_x) + SQR(nhy-llnee_y);
+
+	if (elln < ell) {
+		ell = elln;
+		llx = lln_x;
+		lly = lln_y;
+	}
+
+	if (ellne < ell) {
+		ell = ellne;
+		llx = llne_x - 98304 /* 1.5f*65536.0f */;
+		lly = llne_y;
+	}
+
+	if (elle < ell) {
+		ell = elle;
+		llx = lle_x;
+		lly = lle_y;
+	}
+
+	if (ellnee < ell) {
+		ell = ellnee;
+		llx = llnee_x;
+		lly = llnee_y;
+	}
+
+	llx = llx / 3;
+	lly = (lly * 5822) / 5042; /* = lly / sqrt(3/4) */
+
+	*p_x = ASR(llx+32768, 16);
+	*p_y = ASR(lly+32768, 16);
+}
+
 
 ImVec2 iv2_add(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
 ImVec2 iv2_sub(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
@@ -872,60 +934,11 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 
-		float nhx = bl_x * 3.0f / 65536.0f + mprel.x / (radius);
-		float nhy = bl_y * 0.866f / 65536.0f + mprel.y / (radius);
+		int64_t addr_x, addr_y;
 
-		float llx = floorf(nhx / 3.0f) * 3.0f;
-		float lly = floorf(nhy / (2.0f*0.866f)) * (2.0f*0.866f);
+		get_cursor_hex_addr(&addr_x, &addr_y, bl_x, bl_y, mprel.x / radius,  mprel.y / radius);
 
-		float lln_x = llx;
-		float lln_y = lly + (2.0f*0.866f);
-
-		float llne_x = llx + 1.5f;
-		float llne_y = lly + 0.866f;
-
-		float lle_x = llx + 3.0f;
-		float lle_y = lly;
-
-		float llnee_x = llx + 3.0f;
-		float llnee_y = lly + (2.0f*0.866f);
-
-#define SQR(x_) ((x_)*(x_))
-
-		float ell    = SQR(nhx-llx) + SQR(nhy-lly);
-		float elln   = SQR(nhx-lln_x) + SQR(nhy-lln_y);
-		float ellne  = SQR(nhx-llne_x) + SQR(nhy-llne_y);
-		float elle   = SQR(nhx-lle_x) + SQR(nhy-lle_y);
-		float ellnee = SQR(nhx-llnee_x) + SQR(nhy-llnee_y);
-
-		llx /= 3.0f;
-		lly /= (0.866f);
-
-		if (elln < ell) {
-			ell = elln;
-			llx = lln_x / 3.0f;
-			lly = lln_y / (0.866f);
-		}
-
-		if (ellne < ell) {
-			ell = ellne;
-			llx = (llne_x-1.5f)/3.0f;
-			lly = llne_y/0.866f;
-		}
-
-		if (elle < ell) {
-			ell = elle;
-			llx = lle_x / 3.0f;
-			lly = lle_y / (0.866f);
-		}
-
-		if (ellnee < ell) {
-			ell = ellnee;
-			llx = llnee_x / 3.0f;
-			lly = llnee_y / (0.866f);
-		}
-
-		ImGui::Text("down=%d (lda=%f,%f) nhex=(%f,%f) snap=(%f,%f)", p_state->mouse_down, mprel.x, mprel.y, nhx, nhy, llx, lly);
+		ImGui::Text("down=%d (lda=%f,%f) snap=(%lld,%lld)", p_state->mouse_down, mprel.x, mprel.y, addr_x, addr_y);
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
