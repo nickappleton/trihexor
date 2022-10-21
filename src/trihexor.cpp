@@ -46,19 +46,6 @@ static void glfw_error_callback(int error, const char* description)
 #define PAGE_X_MASK     (PAGE_XY_NB - 1)
 #define PAGE_INDEX_MASK (PAGE_XY_NB*PAGE_XY_NB - 1)
 
-#define DIR_NUM (8)
-#define DIR_N  (0)
-#define DIR_NE (1)
-#define DIR_E  (2)
-#define DIR_SE (3)
-#define DIR_S  (4)
-#define DIR_SW (5)
-#define DIR_W  (6)
-#define DIR_NW (7)
-static int dir_get_opposing(int dir) {
-	return dir ^ 4;
-}
-
 #define EDGE_TYPE_NUM       (6)
 #define EDGE_TYPE_NOTHING   (0)
 #define EDGE_TYPE_RECEIVER  (1)
@@ -67,21 +54,154 @@ static int dir_get_opposing(int dir) {
 #define EDGE_TYPE_SENDER_DF (4)
 #define EDGE_TYPE_SENDER_DI (5)
 
-#define EDGE_DIR_N  (DIR_N)
-#define EDGE_DIR_NE (DIR_NE)
-#define EDGE_DIR_SE (DIR_SE)
-#define EDGE_DIR_S  (DIR_S)
-#define EDGE_DIR_SW (DIR_SW)
-#define EDGE_DIR_NW (DIR_NW)
 
-#define VERTEX_DIR_NE (DIR_NE)
-#define VERTEX_DIR_E  (DIR_E)
-#define VERTEX_DIR_SE (DIR_SE)
-#define VERTEX_DIR_SW (DIR_SW)
-#define VERTEX_DIR_W  (DIR_W)
-#define VERTEX_DIR_NW (DIR_NW)
+struct gridaddr {
+	/* two's complement storage 0x80000000, ...., 0xfffffffe, 0xffffffff, 0x0, 0x1, 0x2, ...., 0x7fffffff */
+	uint32_t y;
+	uint32_t x;
+};
 
+#define EDGE_DIR_N   (0)
+#define EDGE_DIR_NE  (1)
+#define EDGE_DIR_SE  (2)
+#define EDGE_DIR_NW  (3)
+#define EDGE_DIR_SW  (4)
+#define EDGE_DIR_S   (5)
+#define EDGE_DIR_NUM (6)
+static int edge_dir_get_opposing(int dir) {
+	assert(dir < EDGE_DIR_NUM);
+	return 5 - dir;
+}
 
+/*    ___       ___       ___
+ *   /   \     /   \     /   \
+ *  / 0,0 \___/ 0,1 \___/ 0,2 \
+ *  \     /   \     /   \     /
+ *   \___/ 1,0 \___/ 1,1 \___/
+ *   /   \     /   \     /   \
+ *  / 2,0 \___/ 2,1 \___/ 2,3 \
+ *  \     /   \     /   \     /
+ *   \___/ 3,0 \___/ 3,1 \___/
+ *   /   \     /   \     /
+ *  / 4,0 \___/ 4,1 \___/
+ *  \     /   \     /
+ *   \___/ 5,0 \___/
+ *       \     /
+ *        \___/
+ *
+ * For Edges:
+ * Common rules:
+ *  N   = (y-2,x)
+ *  S   = (y+2,x)
+ * 
+ * If y is even:
+ *  NE  = (y-1,x)
+ *  SE  = (y+1,x)
+ *  SW  = (y+1,x-1)
+ *  NW  = (y-1,x-1)
+ * 
+ * If y is odd:
+ *  NE  = (y-1,x+1)
+ *  SE  = (y+1,x+1)
+ *  SW  = (y+1,x)
+ *  NW  = (y-1,x)
+ *
+ * For vertices:
+ * Common Rules:
+ *  E   = (y,  x+1)
+ *  W   = (y,  x-1)
+ *
+ * If y is even:
+ *  NE  = (y-3,x)   # if y is even
+ *  SE  = (y+3,x)   # if y is even
+ *  SW  = (y+3,x-1) # if y is even
+ *  NW  = (y-3,x-1) # if y is even
+ *  
+ * If y is odd:
+ *  NE  = (y-3,x+1) # if y is odd
+ *  SE  = (y+3,x+1) # if y is odd
+ *  SW  = (y+3,x)   # if y is odd
+ *  NW  = (y-3,x)   # if y is odd
+ * */
+static int gridaddr_edge_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int edge_direction) {
+	static const uint32_t y_offsets[6] =
+		{  -2   /* N */
+		,  -1   /* NE */
+		,   1   /* SE */
+		,  -1   /* NW */
+		,   1   /* SW */
+		,   2   /* S */
+		};
+	static const uint32_t x_offsets[6][2] =
+		/*  y_even  y_odd */
+		{   {0,     0} /* N */
+		,   {0,     1} /* NE */
+		,   {0,     1} /* SE */
+		,   {-1,    0} /* NW */
+		,   {-1,    0} /* SW */
+		,   {0,     0} /* S */
+		};
+	uint32_t iy = p_src->y;
+	uint32_t ix = p_src->x;
+	uint32_t dy = (assert(edge_direction < EDGE_DIR_NUM), y_offsets[edge_direction]);
+	uint32_t dx = x_offsets[edge_direction][iy & 1];
+	uint32_t ox = ix + dx;
+	uint32_t oy = iy + dy;
+
+	/* Test for overflow */
+	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
+		return 1;
+
+	p_dest->x = ox;
+	p_dest->y = oy;
+	return 0;
+}
+
+#define VERTEX_DIR_E   (0)
+#define VERTEX_DIR_NE  (1)
+#define VERTEX_DIR_SE  (2)
+#define VERTEX_DIR_NW  (3)
+#define VERTEX_DIR_SW  (4)
+#define VERTEX_DIR_W   (5)
+#define VERTEX_DIR_NUM (6)
+static int vertex_dir_get_opposing(int dir) {
+	assert(dir < VERTEX_DIR_NUM);
+	return 5 - dir;
+}
+
+static int gridaddr_vertex_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int virtex_direction) {
+	static const uint32_t y_offsets[6] =
+		{   0   /* E */
+		,  -3   /* NE */
+		,   3   /* SE */
+		,   3   /* NW */
+		,  -3   /* SW */
+		,   0   /* W */
+		};
+	static const uint32_t x_offsets[6][2] =
+		/*  y_even  y_odd */
+		{   {1,     1} /* E */
+		,   {0,     1} /* NE */
+		,   {0,     1} /* SE */
+		,   {-1,    0} /* NW */
+		,   {-1,    0} /* SW */
+		,   {-1,   -1} /* W */
+		};
+	uint32_t iy = p_src->y;
+	uint32_t ix = p_src->x;
+	uint32_t dy = (assert(virtex_direction < EDGE_DIR_NUM), y_offsets[virtex_direction]);
+	uint32_t dx = x_offsets[virtex_direction][iy & 1];
+	uint32_t ox = ix + dx;
+	uint32_t oy = iy + dy;
+
+	/* Test for overflow */
+	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
+		return 1;
+
+	p_dest->x = ox;
+	p_dest->y = oy;
+	return 0;
+}
 
 
 #define REGISTER_FILE_BITS (16)
@@ -104,23 +224,19 @@ struct gridcell {
 
 	 * 8:10  - N_EDGE
 	 * 11:13 - NE_EDGE
-	 * 14:16
-	 * 17:19 - SE_EDGE
-	 * 20:22 - S_EDGE
-	 * 23:25 - SW_EDGE
-	 * 26:28
-	 * 29:31 - NW_EDGE
-
-	 * 24
-	 * 25    - NE_VERTEX
+	 * 14:16 - SE_EDGE
+	 * 17:19 - NW_EDGE
+	 * 20:22 - SW_EDGE
+	 * 23:25 - S_EDGE
+	 * 
 	 * 26    - E_VERTEX
-	 * 27    - SE_VERTEX
-	 * 28
-	 * 29    - SW_VERTEX
-	 * 30    - W_VERTEX
-	 * 31    - NW_VERTEX
+	 * 27    - NE_VERTEX
+	 * 28    - SE_VERTEX
+	 * 29    - NW_VERTEX
+	 * 30    - SW_VERTEX
+	 * 31    - W_VERTEX
 
-	 * 32    - DELAY_PROCESSOR
+	 * 40    - DELAY_PROCESSOR
 	 * 
 	 * 46    - Link data to register file
 	 * 47    - 0=Read from 1=Write to
@@ -129,13 +245,6 @@ struct gridcell {
 	uint64_t         flags;
 
 };
-
-struct gridaddr {
-	/* two's complement storage 0x80000000, ...., 0xfffffffe, 0xffffffff, 0x0, 0x1, 0x2, ...., 0x7fffffff */
-	uint32_t y;
-	uint32_t x;
-};
-
 
 static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_file, const int line) {
 	if (!condition) {
@@ -150,61 +259,6 @@ static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_
 #else
 #define DEBUG_EVAL(x_) ((void)0)
 #endif
-
-
-
-//	struct gridpage *p_page = gridcell_get_gridpage(p_cell);
-//	assert(control == (control & 0x7));
-
-/*    ___       ___
- *   /   \     /   \
- *  / 0,0 \___/ 0,1 \___
- *  \     /   \     /   \
- *   \___/ 1,0 \___/ 1,1 \
- *   /   \     /   \     /
- *  / 2,0 \___/ 2,1 \___/
- *  \     /   \     /   \
- *   \___/ 3,0 \___/ 3,1 \
- *       \     /   \     /
- *        \___/     \___/
- *
- * Common rules:
- *  N   = (y-2,x)
- *  E   = (y,  x+1)
- *  S   = (y+2,x)
- *  W   = (y,  x-1)
- * 
- * If y is even:
- *  NE  = (y-1,x)
- *  SE  = (y+1,x)
- *  SW  = (y+1,x-1)
- *  NW  = (y-1,x-1)
- * 
- * If y is odd:
- *  NE  = (y-1,x+1)
- *  SE  = (y+1,x+1)
- *  SW  = (y+1,x)
- *  NW  = (y-1,x)
-*/
-static int gridaddr_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int direction) {
-	                                    /* N   NE  E   SE  S   SW  W   NW */
-	static const uint32_t y_offsets[8] = {-2, -1,  0,  1,  2,  1,  0, -1}; /* <--- these are good to go */
-	static const uint32_t x_offsets[8] = {0,   0,  1,  0,  0, -1, -1, -1}; /* <--- these require a position dependent offset for correct behaviour */
-	uint32_t iy = p_src->y;
-	uint32_t ix = p_src->x;
-	uint32_t dy = (assert(direction < DIR_NUM), y_offsets[direction]);
-	uint32_t dx = x_offsets[direction] + ((iy & 1) & (unsigned)direction);
-	uint32_t ox = ix + dx;
-	uint32_t oy = iy + dy;
-
-	/* Test for overflow */
-	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
-		return 1;
-
-	p_dest->x = ox;
-	p_dest->y = oy;
-	return 0;
-}
 
 
 struct gridpage {
@@ -326,8 +380,8 @@ static struct gridcell *gridpage_get_gridcell(struct gridpage *p_page, const str
 	return &(p_page->data[page_index]);
 }
 
-static void gridcell_validate_relationship(struct gridcell *p_local, struct gridcell *p_neighbour, int local_to_neighbour_direction) {
-	int neighbour_to_local_direction = dir_get_opposing(local_to_neighbour_direction);
+static void gridcell_validate_edge_relationship(struct gridcell *p_local, struct gridcell *p_neighbour, int local_to_neighbour_direction) {
+	int neighbour_to_local_direction = edge_dir_get_opposing(local_to_neighbour_direction);
 	int neighbour_edge_control       = (p_neighbour->flags >> (8 + neighbour_to_local_direction * 3)) & 0x7;
 	int local_edge_control           = (p_local->flags >> (8 + local_to_neighbour_direction * 3)) & 0x7;
 	RT_ASSERT(neighbour_edge_control < EDGE_TYPE_NUM);
@@ -342,88 +396,90 @@ static void gridcell_validate_relationship(struct gridcell *p_local, struct grid
 	}
 }
 
-static void gridcell_set_edge_flags_adv(struct gridcell *p_cell, struct gridcell *p_neighbour, int direction, int control) {
-	int              self_pos            = 8 + direction * 3;
-	int              neighbour_pos       = 8 + dir_get_opposing(direction) * 3;
-	uint64_t         self_mask           = 0x7llu << self_pos;
-	uint64_t         neighbour_mask      = 0x7llu << neighbour_pos;
-	uint64_t         self_value          = ((uint64_t)control) << self_pos;
-	uint64_t         neighbour_value     = ((uint64_t)((control == EDGE_TYPE_NOTHING) ? EDGE_TYPE_NOTHING : EDGE_TYPE_RECEIVER)) << neighbour_pos;
-	uint64_t         self_old_flags      = p_cell->flags;
-	uint64_t         neighbour_old_flags = p_neighbour->flags;
-	uint64_t         self_new_flags      = (self_old_flags & ~self_mask) | self_value;
-	uint64_t         neighbour_new_flags = (neighbour_old_flags & ~neighbour_mask) | neighbour_value;
-
-	assert(direction != DIR_E && direction != DIR_W && direction < DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
-	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
-	DEBUG_EVAL(gridcell_validate_relationship(p_cell, p_neighbour, direction));
-
-	p_neighbour->flags = neighbour_new_flags;
-	p_cell->flags      = self_new_flags;
-}
-
-static struct gridcell *gridcell_get_neighbour(struct gridcell *p_cell, int direction) {
+static struct gridcell *gridcell_get_edge_neighbour(struct gridcell *p_cell, int direction) {
 	struct gridaddr  neighbour_addr;
 	struct gridpage *p_cell_page = gridcell_get_gridpage_and_full_addr(p_cell, &neighbour_addr);
 
-	assert(direction < DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	assert(direction < EDGE_DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
 	
-	if (gridaddr_neighbour(&neighbour_addr, &neighbour_addr, direction))
+	if (gridaddr_edge_neighbour(&neighbour_addr, &neighbour_addr, direction))
 		return NULL;
 
 	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, 1);
 }
 
+static struct gridcell *gridcell_get_vertex_neighbour(struct gridcell *p_cell, int direction) {
+	struct gridaddr  neighbour_addr;
+	struct gridpage *p_cell_page = gridcell_get_gridpage_and_full_addr(p_cell, &neighbour_addr);
+
+	assert(direction < VERTEX_DIR_NUM); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	
+	if (gridaddr_vertex_neighbour(&neighbour_addr, &neighbour_addr, direction))
+		return NULL;
+
+	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, 1);
+}
+
+/* Returns the old flags */
+static void set_flags(uint64_t *p_flags, int mask, int position, int new_flags) {
+	uint64_t flags = *p_flags;
+	uint64_t umask = ((uint64_t)mask) << position;
+	uint64_t newv  = ((uint64_t)new_flags) << position;
+	*p_flags = (flags & ~umask) | newv;
+}
+
+#if 0
+static int update_flags(uint64_t *p_flags, int mask, int position, int new_flags) {
+	uint64_t flags = *p_flags;
+	uint64_t umask = ((uint64_t)mask) << position;
+	uint64_t oldv  = flags & umask;
+	uint64_t newv  = ((uint64_t)new_flags) << position;
+	assert((newv & ~umask) == 0);
+	*p_flags = (flags & ~oldv) | newv;
+	return (int)(oldv >> position);
+}
+#endif
+
 static int gridcell_get_edge_flags(const struct gridcell *p_cell, int direction) {
-	assert(direction != DIR_E && direction != DIR_W); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
+	assert(direction < EDGE_DIR_NUM);
 	return (p_cell->flags >> (8 + direction * 3)) & 0x7;
 }
 
+static void gridcell_set_edge_flags_adv(struct gridcell *p_cell, struct gridcell *p_neighbour, int direction, int control) {
+	assert(direction < EDGE_DIR_NUM);
+	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
+	set_flags(&(p_cell->flags),      0x7, 8+direction*3,                        control);
+	set_flags(&(p_neighbour->flags), 0x7, 8+edge_dir_get_opposing(direction)*3, (control == EDGE_TYPE_NOTHING) ? EDGE_TYPE_NOTHING : EDGE_TYPE_RECEIVER);
+	DEBUG_EVAL(gridcell_validate_edge_relationship(p_cell, p_neighbour, direction));
+}
+
+#if 0
 static int gridcell_set_edge_flags(struct gridcell *p_cell, int direction, int control) {
 	struct gridcell *p_neighbour;
 
 	assert(direction != DIR_E && direction != DIR_W); /* there are no east and west edges in the hex grid, just as there are no north and south vertices */
 	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
 	
-	if ((p_neighbour = gridcell_get_neighbour(p_cell, direction)) == NULL)
+	if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, direction)) == NULL)
 		return 1;
 
 	gridcell_set_edge_flags_adv(p_cell, p_neighbour, direction, control);
 	return 0;
 }
+#endif
 
+static int gridcell_get_vert_flags(const struct gridcell *p_cell, int direction) {
+	assert(direction < VERTEX_DIR_NUM);
+	return (p_cell->flags >> (26 + direction)) & 0x1;
+}
 
+static void gridcell_set_vert_flags_adv(struct gridcell *p_cell, struct gridcell *p_neighbour, int direction, int is_linked) {
+	assert(is_linked == 0 || is_linked == 1);
+	assert(direction < VERTEX_DIR_NUM);
+	set_flags(&(p_cell->flags),      0x1, 26+direction,                          is_linked);
+	set_flags(&(p_neighbour->flags), 0x1, 26+vertex_dir_get_opposing(direction), is_linked);
+}
 
-
-
-
-/*    ___       ___
- *   /   \     /   \
- *  / 0,0 \___/ 0,1 \___
- *  \     /   \     /   \
- *   \___/ 1,0 \___/ 1,1 \
- *   /   \     /   \     /
- *  / 2,0 \___/ 2,1 \___/
- *  \     /   \     /   \
- *   \___/ 3,0 \___/ 3,1 \
- *       \     /   \     /
- *        \___/     \___/
- *
- * If y is even:
- *  T   = (y-2,x)
- *  TL  = (y-1,x-1)
- *  TR  = (y-1,x)
- *  BL  = (y+1,x-1)
- *  BR  = (y+1,x)
- *  B   = (y+2,x)
- * If y is odd:
- *  T   = (y-2,x)
- *  TL  = (y-1,x)
- *  TR  = (y-1,x+1)
- *  BL  = (y+1,x)
- *  BR  = (y+1,x+1)
- *  B   = (y+2,x)
- */
 
 
 
@@ -483,9 +539,9 @@ static int get_edge_connection_type(struct gridcell *p_cell, int edge_direction)
 		case EDGE_TYPE_SENDER_DF: return EDGE_SENDING_DF;
 		case EDGE_TYPE_SENDER_DI: return EDGE_SENDING_DI;
 		case EDGE_TYPE_RECEIVER:
-			p_neighbour = gridcell_get_neighbour(p_cell, edge_direction);
+			p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_direction);
 			assert(p_neighbour != NULL);
-			switch (gridcell_get_edge_flags(p_neighbour, dir_get_opposing(edge_direction))) {
+			switch (gridcell_get_edge_flags(p_neighbour, edge_dir_get_opposing(edge_direction))) {
 				case EDGE_TYPE_SENDER_F: return EDGE_RECEIVING_F;
 				case EDGE_TYPE_SENDER_I: return EDGE_RECEIVING_I;
 				case EDGE_TYPE_SENDER_DF: return EDGE_RECEIVING_DF;
@@ -616,12 +672,12 @@ int main(int, char**)
 	for (i = 0; i < 100; i++) {
 
 		directions[i] = rand() & 0x7;
-		if (gridaddr_neighbour(&pos, &pos, directions[i]))
+		if (gridaddr_edge_neighbour(&pos, &pos, directions[i]))
 			abort();
 		printf("%d,%d,%d\n", i, pos.x, pos.y);
 	}
 	for (i = 0; i < 100; i++) {
-		if (gridaddr_neighbour(&pos, &pos, dir_get_opposing(directions[(i * 13) % 100])))
+		if (gridaddr_edge_neighbour(&pos, &pos, dir_get_opposing(directions[(i * 13) % 100])))
 			abort();
 		printf("%d,%d,%d\n", i, pos.x, pos.y);
 	}
@@ -645,28 +701,28 @@ int main(int, char**)
 
 	for (i = 0; i < 20000; i++) {
 		struct gridcell *p_neighbour;
-		int ctl;
-		int xdir;
-		pdir = rand() % 6;//(pdir * 96 + 32 * (rand() % 6)) / 128;
+		int edge_ctl;
+		int edge_dir = rand() % EDGE_DIR_NUM;//(pdir * 16 + 112 * (rand() % EDGE_DIR_NUM)) / 128;
+		int virt_dir = rand() % VERTEX_DIR_NUM;
+		int virt_ctl;
 
-		switch (pdir) {
-			case 0: xdir = EDGE_DIR_N; break;
-			case 1: xdir = EDGE_DIR_NE; break;
-			case 2: xdir = EDGE_DIR_SE; break;
-			case 3: xdir = EDGE_DIR_S; break;
-			case 4: xdir = EDGE_DIR_SW; break;
-			case 5: xdir = EDGE_DIR_NW; break;
-		}
-		if ((p_neighbour = gridcell_get_neighbour(p_cell, xdir)) == NULL)
+		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir)) == NULL)
 			abort();
+		gridcell_set_vert_flags_adv(p_cell, p_neighbour, virt_dir, rand() & 1);
+
+		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir)) == NULL)
+			abort();
+		
 		switch (rand() % 5) {
-			case 0: ctl = EDGE_TYPE_NOTHING; break;
-			case 1: ctl = EDGE_TYPE_SENDER_DF; break;
-			case 2: ctl = EDGE_TYPE_SENDER_DI; break;
-			case 3: ctl = EDGE_TYPE_SENDER_F; break;
-			case 4: ctl = EDGE_TYPE_SENDER_I; break;
+			case 0: edge_ctl = EDGE_TYPE_NOTHING; break;
+			case 1: edge_ctl = EDGE_TYPE_SENDER_DF; break;
+			case 2: edge_ctl = EDGE_TYPE_SENDER_DI; break;
+			case 3: edge_ctl = EDGE_TYPE_SENDER_F; break;
+			case 4: edge_ctl = EDGE_TYPE_SENDER_I; break;
 		}
-		gridcell_set_edge_flags_adv(p_cell, p_neighbour, xdir, ctl);
+
+		gridcell_set_edge_flags_adv(p_cell, p_neighbour, edge_dir, edge_ctl);
+
 		// (void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
 		// printf("set edge_flags for node %08x,%08x for direction %d to %d\n", addr.x, addr.y, xdir, ctl);
 		p_cell = p_neighbour;
@@ -856,6 +912,11 @@ int main(int, char**)
 				int edge_mode_ne = EDGE_NOTHING;
 				int edge_mode_se = EDGE_NOTHING;
 
+				int virt_connected_ne = 0;
+				int virt_connected_e = 0;
+				int virt_connected_se = 0;
+				int virt_connected_sw = 0;
+
 				int split_n  = 0;
 				int split_ne = 0;
 				int split_e  = 0;
@@ -875,15 +936,15 @@ int main(int, char**)
 
 					/* draw the segments marked X */
 
-					/*    XXX       ___
+					/*    XXX       ___             (X,y)
 					 *   /   X     /   \
-					 *  / 0,0 X---/ 0,1 \___
+					 *  / 0,0 X---/ 1,0 \___
 					 *  \     X   \     /   \
-					 *   \___X 1,0 \___/ 1,1 \
+					 *   \___X 0,1 \___/ 1,1 \
 					 *   /   \     /   \     /
-					 *  / 2,0 \___/ 2,1 \___/
+					 *  / 0,2 \___/ 1,2 \___/
 					 *  \     /   \     /   \
-					 *   \___/ 3,0 \___/ 3,1 \
+					 *   \___/ 0,3 \___/ 1,3 \
 					 *       \     /   \     /
 					 *        \___/     \___/
 					 */
