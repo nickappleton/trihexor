@@ -872,9 +872,60 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 
+		float nhx = bl_x * 3.0f / 65536.0f + mprel.x / (radius);
+		float nhy = bl_y * 0.866f / 65536.0f + mprel.y / (radius);
 
+		float llx = floorf(nhx / 3.0f) * 3.0f;
+		float lly = floorf(nhy / (2.0f*0.866f)) * (2.0f*0.866f);
 
-		ImGui::Text("down=%d (lda=%f,%f) ", p_state->mouse_down, mprel.x, mprel.y);
+		float lln_x = llx;
+		float lln_y = lly + (2.0f*0.866f);
+
+		float llne_x = llx + 1.5f;
+		float llne_y = lly + 0.866f;
+
+		float lle_x = llx + 3.0f;
+		float lle_y = lly;
+
+		float llnee_x = llx + 3.0f;
+		float llnee_y = lly + (2.0f*0.866f);
+
+#define SQR(x_) ((x_)*(x_))
+
+		float ell    = SQR(nhx-llx) + SQR(nhy-lly);
+		float elln   = SQR(nhx-lln_x) + SQR(nhy-lln_y);
+		float ellne  = SQR(nhx-llne_x) + SQR(nhy-llne_y);
+		float elle   = SQR(nhx-lle_x) + SQR(nhy-lle_y);
+		float ellnee = SQR(nhx-llnee_x) + SQR(nhy-llnee_y);
+
+		llx /= 3.0f;
+		lly /= (0.866f);
+
+		if (elln < ell) {
+			ell = elln;
+			llx = lln_x / 3.0f;
+			lly = lln_y / (0.866f);
+		}
+
+		if (ellne < ell) {
+			ell = ellne;
+			llx = (llne_x-1.5f)/3.0f;
+			lly = llne_y/0.866f;
+		}
+
+		if (elle < ell) {
+			ell = elle;
+			llx = lle_x / 3.0f;
+			lly = lle_y / (0.866f);
+		}
+
+		if (ellnee < ell) {
+			ell = ellnee;
+			llx = llnee_x / 3.0f;
+			lly = llnee_y / (0.866f);
+		}
+
+		ImGui::Text("down=%d (lda=%f,%f) nhex=(%f,%f) snap=(%f,%f)", p_state->mouse_down, mprel.x, mprel.y, nhx, nhy, llx, lly);
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
