@@ -639,12 +639,14 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 #define SQRT3   (1.732050807568877f)
 #define SQRT3_4 (SQRT3 * 0.5f)
 
-void get_cursor_hex_addr(int64_t *p_x, int64_t *p_y, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y, ImVec2 *prcc) {
+int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y, ImVec2 *prcc) {
 	int64_t thx    = bl_x + (int32_t)(cursor_x * (65536.0f / 3.0f));
 	int64_t thy    = bl_y + (int32_t)(cursor_y * (65536.0f / SQRT3_4));
 
-	int64_t wholex  = ((int64_t)(int32_t)(uint32_t)(((uint64_t)thx) >> 16));
-	int64_t wholey  = ((int64_t)(int32_t)(uint32_t)(((uint64_t)thy) >> 17)) * 2;
+	/* could probably do a check that the values in tlx are sensible... */
+
+	uint32_t wholex  = ((uint32_t)(((uint64_t)thx) >> 16));
+	uint32_t wholey  = ((uint32_t)(((uint64_t)thy) >> 17)) << 1;
 
 	float   fbl_x   = ((float)(int32_t)(((uint32_t)thx) & 0xFFFF)) * (3.0f / 65536.0f);
 	float   fbl_y   = ((float)(int32_t)(((uint32_t)thy) & 0x1FFFF)) * (SQRT3_4 / 65536.0f);
@@ -663,8 +665,9 @@ void get_cursor_hex_addr(int64_t *p_x, int64_t *p_y, int64_t bl_x, int64_t bl_y,
 	float x_dmid2   = x_dmid * x_dmid;
 	float x_dright2 = x_dright * x_dright;
 
-	int32_t offset_x = 0;
-	int32_t offset_y = 0;
+	uint32_t offset_x = 0;
+	uint32_t offset_y = 0;
+	uint32_t out_x, out_y;
 
 	float e_cur = x_dleft2 + y_dbot2;
 	float t;
@@ -709,13 +712,18 @@ void get_cursor_hex_addr(int64_t *p_x, int64_t *p_y, int64_t bl_x, int64_t bl_y,
 		fbl_y    = y_dmid;
 	}
 
-	wholex += offset_x;
-	wholey += offset_y;
+	out_x = wholex + offset_x;
+	out_y = wholey + offset_y;
 
-	prcc->x = fbl_x;
-	prcc->y = fbl_y;
-	*p_x = wholex;
-	*p_y = wholey;
+	if ((((out_x ^ wholex) & (out_x ^ offset_x)) | ((out_y ^ wholey) & (out_y ^ offset_y))) & 0x80000000)
+		return 1;
+
+	prcc->x   = fbl_x;
+	prcc->y   = fbl_y;
+	p_addr->x = out_x;
+	p_addr->y = out_y;
+
+	return 0;
 }
 
 
@@ -729,6 +737,15 @@ struct plot_grid_state {
 	
 	int    mouse_down;
 	ImVec2 mouse_down_pos;
+
+
+};
+
+struct highlighted_cell {
+	struct gridaddr addr;
+	ImVec2          pos_in_cell;
+
+	int edge_idx;
 
 
 };
@@ -761,36 +778,39 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 
 	ImVec2 mprel = ImVec2(io.MousePos.x - inner_bb.Min.x, inner_bb.Max.y - io.MousePos.y);
 
-	int64_t addr_x, addr_y;
-
 	int64_t bl_x = p_state->bl_x;
 	int64_t bl_y = p_state->bl_y;
-	int edge_idx = EDGE_DIR_N;
 
-	ImVec2 pos_in_cell;
+	struct highlighted_cell hc;
+	struct highlighted_cell *p_hc = NULL;
 
-	get_cursor_hex_addr(&addr_x, &addr_y, bl_x, bl_y, mprel.x / radius,  mprel.y / radius, &pos_in_cell);
+	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x / radius,  mprel.y / radius, &(hc.pos_in_cell))) {
+		float rat = hc.pos_in_cell.y / hc.pos_in_cell.x;
+		hc.edge_idx = EDGE_DIR_N;
+		if (hc.pos_in_cell.x > 0) {
+			if (rat > 1.732)
+				hc.edge_idx = EDGE_DIR_N;
+			else if (rat < -1.732)
+				hc.edge_idx = EDGE_DIR_S;
+			else if (rat > 0.0f)
+				hc.edge_idx = EDGE_DIR_NE;
+			else
+				hc.edge_idx = EDGE_DIR_SE;
+		} else {
+			if (rat > 1.732)
+				hc.edge_idx = EDGE_DIR_S;
+			else if (rat < -1.732)
+				hc.edge_idx = EDGE_DIR_N;
+			else if (rat > 0.0f)
+				hc.edge_idx = EDGE_DIR_SW;
+			else
+				hc.edge_idx = EDGE_DIR_NW;
+		}
 
-	float rat = pos_in_cell.y / pos_in_cell.x;
-	if (pos_in_cell.x > 0) {
-		if (rat > 1.732)
-			edge_idx = EDGE_DIR_N;
-		else if (rat < -1.732)
-			edge_idx = EDGE_DIR_S;
-		else if (rat > 0.0f)
-			edge_idx = EDGE_DIR_NE;
-		else
-			edge_idx = EDGE_DIR_SE;
-	} else {
-		if (rat > 1.732)
-			edge_idx = EDGE_DIR_S;
-		else if (rat < -1.732)
-			edge_idx = EDGE_DIR_N;
-		else if (rat > 0.0f)
-			edge_idx = EDGE_DIR_SW;
-		else
-			edge_idx = EDGE_DIR_NW;
+		p_hc = &hc;
 	}
+
+
 
 
 	if (hovered) {
@@ -802,13 +822,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 			make_active = 1;
 		}
 
-		if (g.IO.MouseDoubleClicked[0]) {
-			struct gridaddr addr;
-			addr.x = (uint32_t)addr_x;
-			addr.y = (uint32_t)addr_y;
-			int dir = 0;
-
-			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &addr, 0);
+		if (g.IO.MouseDoubleClicked[0] && p_hc != NULL) {
+			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 0);
 			if (p_cell != NULL) {
 				int i;
 				for (i = 0; i < EDGE_DIR_NUM; i++)
@@ -816,14 +831,11 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 			}
 		}
 
-		if (g.IO.MouseClicked[1]) {
-			struct gridaddr addr;
-			addr.x = (uint32_t)addr_x;
-			addr.y = (uint32_t)addr_y;
-			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &addr, 1);
+		if (g.IO.MouseClicked[1] && p_hc != NULL) {
+			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 1);
 			if (p_cell != NULL) {
 				int new_flag;
-				switch (gridcell_get_edge_flags(p_cell, edge_idx)) {
+				switch (gridcell_get_edge_flags(p_cell, p_hc->edge_idx)) {
 				case EDGE_TYPE_NOTHING:
 					new_flag = EDGE_TYPE_SENDER_F;
 					break;
@@ -840,13 +852,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 					new_flag = EDGE_TYPE_NOTHING;
 					break;
 				}
-				gridcell_set_edge_flags(p_cell, edge_idx, new_flag);
+				gridcell_set_edge_flags(p_cell, p_hc->edge_idx, new_flag);
 			}
-
-
-			
-
-
 		}
 
 
@@ -1027,12 +1034,12 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 
 	p_list->PopClipRect();
 
-	if (ImGui::IsItemHovered())
+	if (ImGui::IsItemHovered() && p_hc != NULL)
 	{
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 
-		ImGui::Text("down=%d (lda=%f,%f) snap=(%lld,%lld) cell=(%f,%f) edge=%d", p_state->mouse_down, mprel.x, mprel.y, addr_x, addr_y, pos_in_cell.x, pos_in_cell.y, edge_idx);
+		ImGui::Text("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d", p_state->mouse_down, mprel.x, mprel.y, (long)(int32_t)p_hc->addr.x, (long)(int32_t)p_hc->addr.y, p_hc->pos_in_cell.x, p_hc->pos_in_cell.y, p_hc->edge_idx);
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
