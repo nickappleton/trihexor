@@ -636,71 +636,86 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 
 #define ASR(n_, b_) ((n_) >> (b_))
 
+#define SQRT3   (1.732050807568877f)
+#define SQRT3_4 (SQRT3 * 0.5f)
 
 void get_cursor_hex_addr(int64_t *p_x, int64_t *p_y, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y, ImVec2 *prcc) {
-	int64_t thx = bl_x + (int32_t)(cursor_x * 65536.0f / 3.0f);
-	int64_t thy = bl_y + (int32_t)(cursor_y * 65536.0f / 0.866f);
+	int64_t thx    = bl_x + (int32_t)(cursor_x * (65536.0f / 3.0f));
+	int64_t thy    = bl_y + (int32_t)(cursor_y * (65536.0f / SQRT3_4));
 
-	int64_t nhx     = thx * 3;
-	int64_t nhy     = ASR(thy*113512, 17);
-	int64_t llx     = ASR(thx, 16) * 3*65536;
-	int64_t lly     = ASR(thy, 17) * 113512; /* 113511.681724833942309 = 2.0f*0.866f*65536.0f */;
-	int64_t pix     = llx;
-	int64_t lln_x   = llx;
-	int64_t lln_y   = lly + 113512;
-	int64_t llne_x  = llx + 98304; /* 98304 = 1.5f*65536.0f */
-	int64_t llne_y  = lly + 56756; /* 56755.840862416971154 = 0.866025403784439*65536.0 */
-	int64_t lle_x   = llx + 196608; /* 196608 = 3.0f*65536.0f */
-	int64_t lle_y   = lly;
-	int64_t llnee_x = llx + 196608;
-	int64_t llnee_y = lly + 113512;
+	int64_t wholex  = ((int64_t)(int32_t)(uint32_t)(((uint64_t)thx) >> 16));
+	int64_t wholey  = ((int64_t)(int32_t)(uint32_t)(((uint64_t)thy) >> 17)) * 2;
 
-#define SQR(x_) ((x_)*(x_))
+	float   fbl_x   = ((float)(int32_t)(((uint32_t)thx) & 0xFFFF)) * (3.0f / 65536.0f);
+	float   fbl_y   = ((float)(int32_t)(((uint32_t)thy) & 0x1FFFF)) * (SQRT3_4 / 65536.0f);
 
-	int64_t ell    = SQR(nhx-llx) + SQR(nhy-lly);
-	int64_t elln   = SQR(nhx-lln_x) + SQR(nhy-lln_y);
-	int64_t ellne  = SQR(nhx-llne_x) + SQR(nhy-llne_y);
-	int64_t elle   = SQR(nhx-lle_x) + SQR(nhy-lle_y);
-	int64_t ellnee = SQR(nhx-llnee_x) + SQR(nhy-llnee_y);
+	float y_dbot    = fbl_y;
+	float y_dmid    = fbl_y - SQRT3_4;
+	float y_dtop    = fbl_y - 2.0f*SQRT3_4;
+	float x_dleft   = fbl_x;
+	float x_dmid    = fbl_x - 1.5f;
+	float x_dright  = fbl_x - 3.0f;
 
-	if (elln < ell) {
-		ell = elln;
-		pix = lln_x;
-		llx = lln_x;
-		lly = lln_y;
+	float y_dbot2   = y_dbot * y_dbot;
+	float y_dmid2   = y_dmid * y_dmid;
+	float y_dtop2   = y_dtop * y_dtop;
+	float x_dleft2  = x_dleft * x_dleft;
+	float x_dmid2   = x_dmid * x_dmid;
+	float x_dright2 = x_dright * x_dright;
+
+	int32_t offset_x = 0;
+	int32_t offset_y = 0;
+
+	float e_cur = x_dleft2 + y_dbot2;
+	float t;
+
+	/* top-left */
+	t = x_dleft2 + y_dtop2;
+	if (t < e_cur) {
+		e_cur    = t;
+		offset_x = 0;
+		offset_y = 2;
+		fbl_x    = x_dleft;
+		fbl_y    = y_dtop;
 	}
 
-	if (ellne < ell) {
-		ell = ellne;
-		pix = llne_x;
-		llx = llne_x - 98304 /* 1.5f*65536.0f */;
-		lly = llne_y;
+	/* top-right */
+	t = x_dright2 + y_dtop2;
+	if (t < e_cur) {
+		e_cur    = t;
+		offset_x = 1;
+		offset_y = 2;
+		fbl_x    = x_dright;
+		fbl_y    = y_dtop;
 	}
 
-	if (elle < ell) {
-		ell = elle;
-		pix = lle_x;
-		llx = lle_x;
-		lly = lle_y;
+	/* bottom-right */
+	t = x_dright2 + y_dbot2;
+	if (t < e_cur) {
+		e_cur    = t;
+		offset_x = 1;
+		offset_y = 0;
+		fbl_x    = x_dright;
+		fbl_y    = y_dbot;
 	}
 
-	if (ellnee < ell) {
-		ell = ellnee;
-		pix = llnee_x;
-		llx = llnee_x;
-		lly = llnee_y;
+	/* middle */
+	t = x_dmid2 + y_dmid2;
+	if (t < e_cur) {
+		e_cur    = t;
+		offset_x = 0;
+		offset_y = 1;
+		fbl_x    = x_dmid;
+		fbl_y    = y_dmid;
 	}
 
-	if (prcc != NULL) {
-		prcc->x = (nhx-pix) / 65536.0f;
-		prcc->y = (nhy-lly) / 65536.0f;
-	}
+	wholex += offset_x;
+	wholey += offset_y;
 
-	llx = llx / 3;
-	lly = (lly * 5822) / 5042; /* = lly / sqrt(3/4) */
-
-	*p_x = ASR(llx+32768, 16);
-	*p_y = ASR(lly+32768, 16);
+	prcc->x = fbl_x;
+	prcc->y = fbl_y;
+	*p_x = wholex;
+	*p_y = wholey;
 }
 
 
