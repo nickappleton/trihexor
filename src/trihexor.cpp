@@ -44,6 +44,18 @@ struct gridaddr {
 	uint32_t x;
 };
 
+static int gridaddr_add_check(struct gridaddr *p_dest, const struct gridaddr *p_src1, const struct gridaddr *p_src2) {
+	uint32_t ix = p_src1->x;
+	uint32_t iy = p_src1->y;
+	uint32_t dx = p_src2->x;
+	uint32_t dy = p_src2->y;
+	uint32_t ox = ix + dx;
+	uint32_t oy = iy + dy;
+	p_dest->x = ox;
+	p_dest->y = oy;
+	return (int)(int32_t)((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) >> 31);
+}
+
 #define EDGE_DIR_N   (0)
 #define EDGE_DIR_NE  (1)
 #define EDGE_DIR_SE  (2)
@@ -56,59 +68,63 @@ static int edge_dir_get_opposing(int dir) {
 	return 5 - dir;
 }
 
-/*    ___       ___       ___
- *   /   \     /   \     /   \
- *  / 0,0 \___/ 0,1 \___/ 0,2 \
- *  \     /   \     /   \     /
- *   \___/ 1,0 \___/ 1,1 \___/
- *   /   \     /   \     /   \
- *  / 2,0 \___/ 2,1 \___/ 2,3 \
- *  \     /   \     /   \     /
- *   \___/ 3,0 \___/ 3,1 \___/
- *   /   \     /   \     /
- *  / 4,0 \___/ 4,1 \___/
- *  \     /   \     /
- *   \___/ 5,0 \___/
- *       \     /
- *        \___/
+#define VERTEX_DIR_E   (0)
+#define VERTEX_DIR_NE  (1)
+#define VERTEX_DIR_SE  (2)
+#define VERTEX_DIR_NW  (3)
+#define VERTEX_DIR_SW  (4)
+#define VERTEX_DIR_W   (5)
+#define VERTEX_DIR_NUM (6)
+static int vertex_dir_get_opposing(int dir) {
+	assert(dir < VERTEX_DIR_NUM);
+	return 5 - dir;
+}
+
+/* How the grid is layed out:
  *
- * THESE COMMENTS ARE ALL WRONG BECAUSE I INVERTED THE Y AXIS HERE! 2D
- * COORDINATE SYSTEMS ARE THE WORST AND I AM AN IDIOT.
- *  
- * For Edges:
+ *           x=0       x=1       x=2       x=3
+ *        ___       ___       ___       ___       ___
+ *       /   \     /   \     /   \     /   \     /   \     /
+ * y=6  / 0,6 \___/ 1,6 \___/ 2,6 \___/ 3,6 \___/ 4,6 \___/ ...
+ *      \     /   \     /   \     /   \     /   \     /
+ * y=5   \___/ 0,5 \___/ 1,5 \___/ 2,5 \___/ 3,5 \___/ ...
+ *       /   \     /   \     /   \     /   \     /
+ * y=4  / 0,4 \___/ 1,4 \___/ 2,4 \___/ 3,4 \___/ ...
+ *      \     /   \     /   \     /   \     /
+ * y=3   \___/ 0,3 \___/ 1,3 \___/ 2,3 \___/ ...
+ *       /   \     /   \     /   \     /
+ * y=2  / 0,2 \___/ 1,2 \___/ 1,2 \___/ ...
+ *      \     /   \     /   \     /
+ * y=1   \___/ 0,1 \___/ 1,1 \___/ ...
+ *       /   \     /   \     /             NW   N   NE
+ * y=0  / 0,0 \___/ 1,0 \___/ ...            \  |  /
+ *      \     /   \     /                  W __\|/__ E
+ * y=-1  \___/ 0,-1\___/ ...                   /|\
+ *       /   \     /                         /  |  \
+ * y=-2 / 0,-2\___/ ...                    SW   S   SE
+ *      \     /
+ *       \___/
+ *      
+ * For edges             For vertices
+ * ---------             ------------
+ *
  * Common rules:
- *  N   = (y-2,x)
- *  S   = (y+2,x)
+ *  N  = (x,   y+2)      E  = (x+1, y)
+ *  S  = (x,   y-2)      W  = (x-1, y)
  * 
  * If y is even:
- *  NE  = (y-1,x)
- *  SE  = (y+1,x)
- *  SW  = (y+1,x-1)
- *  NW  = (y-1,x-1)
+ *  NE = (x,   y+1)      NE = (x,   y+3)
+ *  SE = (x,   y-1)      SE = (x,   y-3)
+ *  SW = (x-1, y-1)      SW = (x-1, y-3)
+ *  NW = (x-1, y+1)      NW = (x-1, y+3)
  * 
  * If y is odd:
- *  NE  = (y-1,x+1)
- *  SE  = (y+1,x+1)
- *  SW  = (y+1,x)
- *  NW  = (y-1,x)
- *
- * For vertices:
- * Common Rules:
- *  E   = (y,  x+1)
- *  W   = (y,  x-1)
- *
- * If y is even:
- *  NE  = (y-3,x)   # if y is even
- *  SE  = (y+3,x)   # if y is even
- *  SW  = (y+3,x-1) # if y is even
- *  NW  = (y-3,x-1) # if y is even
- *  
- * If y is odd:
- *  NE  = (y-3,x+1) # if y is odd
- *  SE  = (y+3,x+1) # if y is odd
- *  SW  = (y+3,x)   # if y is odd
- *  NW  = (y-3,x)   # if y is odd
- * */
+ *  NE = (x+1, y+1)      NE = (x+1, y+3)
+ *  SE = (x+1, y-1)      SE = (x+1, y-3)
+ *  SW = (x,   y-1)      SW = (x,   y-3)
+ *  NW = (x,   y+1)      NW = (x,   y+3)
+ */
+
 static int gridaddr_edge_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int edge_direction) {
 	static const uint32_t y_offsets[6] =
 		{   2   /* N */
@@ -127,32 +143,11 @@ static int gridaddr_edge_neighbour(struct gridaddr *p_dest, const struct gridadd
 		,   {-1,    0} /* SW */
 		,   {0,     0} /* S */
 		};
-	uint32_t iy = p_src->y;
-	uint32_t ix = p_src->x;
-	uint32_t dy = (assert(edge_direction < EDGE_DIR_NUM), y_offsets[edge_direction]);
-	uint32_t dx = x_offsets[edge_direction][iy & 1];
-	uint32_t ox = ix + dx;
-	uint32_t oy = iy + dy;
-
-	/* Test for overflow */
-	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
-		return 1;
-
-	p_dest->x = ox;
-	p_dest->y = oy;
-	return 0;
-}
-
-#define VERTEX_DIR_E   (0)
-#define VERTEX_DIR_NE  (1)
-#define VERTEX_DIR_SE  (2)
-#define VERTEX_DIR_NW  (3)
-#define VERTEX_DIR_SW  (4)
-#define VERTEX_DIR_W   (5)
-#define VERTEX_DIR_NUM (6)
-static int vertex_dir_get_opposing(int dir) {
-	assert(dir < VERTEX_DIR_NUM);
-	return 5 - dir;
+	struct gridaddr offset;
+	assert(edge_direction < EDGE_DIR_NUM);
+	offset.x = x_offsets[edge_direction][p_src->y & 1];
+	offset.y = y_offsets[edge_direction];
+	return gridaddr_add_check(p_dest, p_src, &offset);
 }
 
 static int gridaddr_vertex_neighbour(struct gridaddr *p_dest, const struct gridaddr *p_src, int virtex_direction) {
@@ -173,20 +168,11 @@ static int gridaddr_vertex_neighbour(struct gridaddr *p_dest, const struct grida
 		,   {-1,    0} /* SW */
 		,   {-1,   -1} /* W */
 		};
-	uint32_t iy = p_src->y;
-	uint32_t ix = p_src->x;
-	uint32_t dy = (assert(virtex_direction < EDGE_DIR_NUM), y_offsets[virtex_direction]);
-	uint32_t dx = x_offsets[virtex_direction][iy & 1];
-	uint32_t ox = ix + dx;
-	uint32_t oy = iy + dy;
-
-	/* Test for overflow */
-	if ((((ox ^ ix) & (ox ^ dx)) | ((oy ^ iy) & (oy ^ dy))) & 0x80000000)
-		return 1;
-
-	p_dest->x = ox;
-	p_dest->y = oy;
-	return 0;
+	struct gridaddr offset;
+	assert(virtex_direction < VERTEX_DIR_NUM);
+	offset.x = x_offsets[virtex_direction][p_src->y & 1];
+	offset.y = y_offsets[virtex_direction];
+	return gridaddr_add_check(p_dest, p_src, &offset);
 }
 
 
