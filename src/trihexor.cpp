@@ -626,13 +626,11 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 #define SQRT3_4 (SQRT3 * 0.5f)
 
 int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y, ImVec2 *prcc) {
-	int64_t thx    = bl_x + (int32_t)(cursor_x * (65536.0f / 3.0f));
-	int64_t thy    = bl_y + (int32_t)(cursor_y * (65536.0f / SQRT3_4));
+	int64_t thx     = bl_x + (int32_t)(cursor_x * (65536.0f / 3.0f));
+	int64_t thy     = bl_y + (int32_t)(cursor_y * (65536.0f / SQRT3_4));
 
-	/* could probably do a check that the values in tlx are sensible... */
-
-	uint32_t wholex  = ((uint32_t)(((uint64_t)thx) >> 16));
-	uint32_t wholey  = ((uint32_t)(((uint64_t)thy) >> 17)) << 1;
+	int64_t wholex  = ASR(thx, 16);
+	int64_t wholey  = ASR(thy, 17) * 2;
 
 	float   fbl_x   = ((float)(int32_t)(((uint32_t)thx) & 0xFFFF)) * (3.0f / 65536.0f);
 	float   fbl_y   = ((float)(int32_t)(((uint32_t)thy) & 0x1FFFF)) * (SQRT3_4 / 65536.0f);
@@ -651,9 +649,9 @@ int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, flo
 	float x_dmid2   = x_dmid * x_dmid;
 	float x_dright2 = x_dright * x_dright;
 
-	uint32_t offset_x = 0;
-	uint32_t offset_y = 0;
-	uint32_t out_x, out_y;
+	int32_t offset_x = 0;
+	int32_t offset_y = 0;
+	int64_t out_x, out_y;
 
 	float e_cur = x_dleft2 + y_dbot2;
 	float t;
@@ -701,13 +699,13 @@ int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, flo
 	out_x = wholex + offset_x;
 	out_y = wholey + offset_y;
 
-	if ((((out_x ^ wholex) & (out_x ^ offset_x)) | ((out_y ^ wholey) & (out_y ^ offset_y))) & 0x80000000)
+	if (out_x < INT32_MIN || out_x > INT32_MAX || out_y < INT32_MIN || out_y > INT32_MAX)
 		return 1;
 
 	prcc->x   = fbl_x;
 	prcc->y   = fbl_y;
-	p_addr->x = out_x;
-	p_addr->y = out_y;
+	p_addr->x = (uint32_t)out_x;
+	p_addr->y = (uint32_t)out_y;
 
 	return 0;
 }
