@@ -30,13 +30,13 @@ static void glfw_error_callback(int error, const char* description)
 #define PAGE_X_MASK     (PAGE_XY_NB - 1)
 #define PAGE_INDEX_MASK (PAGE_XY_NB*PAGE_XY_NB - 1)
 
-#define EDGE_TYPE_NUM       (6)
-#define EDGE_TYPE_NOTHING   (0)
-#define EDGE_TYPE_RECEIVER  (1)
-#define EDGE_TYPE_SENDER_F  (2)
-#define EDGE_TYPE_SENDER_I  (3)
-#define EDGE_TYPE_SENDER_DF (4)
-#define EDGE_TYPE_SENDER_DI (5)
+#define EDGE_TYPE_NUM         (6)
+#define EDGE_TYPE_NOTHING     (0)
+#define EDGE_TYPE_SENDER      (1)
+#define EDGE_TYPE_RECEIVER_F  (2)
+#define EDGE_TYPE_RECEIVER_I  (3)
+#define EDGE_TYPE_RECEIVER_DF (4)
+#define EDGE_TYPE_RECEIVER_DI (5)
 
 struct gridaddr {
 	/* two's complement storage 0x80000000, ...., 0xfffffffe, 0xffffffff, 0x0, 0x1, 0x2, ...., 0x7fffffff */
@@ -155,8 +155,8 @@ static int gridaddr_vertex_neighbour(struct gridaddr *p_dest, const struct grida
 		{   0   /* E */
 		,   3   /* NE */
 		,  -3   /* SE */
-		,  -3   /* NW */
-		,   3   /* SW */
+		,   3   /* NW */
+		,  -3   /* SW */
 		,   0   /* W */
 		};
 	static const uint32_t x_offsets[6][2] =
@@ -208,15 +208,24 @@ struct gridcell {
 	 * 30    - SW_VERTEX
 	 * 31    - W_VERTEX
 
-	 * 40    - DELAY_PROCESSOR
-	 * 
-	 * 46    - Link data to register file
-	 * 47    - 0=Read from 1=Write to
-	 * 48:63 - Register file index */
+	 * 32    - CURRENT_VALUE
+	 * 33    - PREVIOUS_VALUE
+	 * 34    - EXTERNAL_SUPPLY
+	 * 35    - IS_COMPUTING_VALUE
+	 * 36    - VALUE_IS_COMPUTED */
 
 	uint64_t         flags;
 
 };
+
+#define CELLFLAG_EXTERNAL_SUPPLY_BIT  (34)
+#define CELLFLAG_EXTERNAL_SUPPLY_MASK (1ull << CELLFLAG_EXTERNAL_SUPPLY_BIT)
+#define CELLFLAG_CURRENT_VALUE_BIT    (32)
+#define CELLFLAG_CURRENT_VALUE_MASK   (1ull << CELLFLAG_CURRENT_VALUE_BIT)
+#define CELLFLAG_IS_COMPUTING_MASK    (1ull << 35)
+#define CELLFLAG_IS_COMPUTED_MASK     (1ull << 36)
+#define CELLFLAG_DELAY_VALUE_BIT      (33)
+#define CELLFLAG_DELAY_VALUE_MASK     (1ull << CELLFLAG_DELAY_VALUE_BIT)
 
 static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_file, const int line) {
 	if (!condition) {
@@ -358,17 +367,17 @@ static void gridcell_validate_edge_relationship(struct gridcell *p_local, struct
 	int local_edge_control           = (p_local->flags >> (8 + local_to_neighbour_direction * 3)) & 0x7;
 	RT_ASSERT(neighbour_edge_control < EDGE_TYPE_NUM);
 	RT_ASSERT(local_edge_control < EDGE_TYPE_NUM);
-	if (local_edge_control == EDGE_TYPE_RECEIVER) {
+	if (local_edge_control == EDGE_TYPE_SENDER) {
 		RT_ASSERT(neighbour_edge_control != EDGE_TYPE_NOTHING);
-		RT_ASSERT(neighbour_edge_control != EDGE_TYPE_RECEIVER);
+		RT_ASSERT(neighbour_edge_control != EDGE_TYPE_SENDER);
 	} else if (local_edge_control == EDGE_TYPE_NOTHING) {
 		RT_ASSERT(neighbour_edge_control == EDGE_TYPE_NOTHING);
 	} else {
-		RT_ASSERT(neighbour_edge_control == EDGE_TYPE_RECEIVER);
+		RT_ASSERT(neighbour_edge_control == EDGE_TYPE_SENDER);
 	}
 }
 
-static struct gridcell *gridcell_get_edge_neighbour(struct gridcell *p_cell, int direction) {
+static struct gridcell *gridcell_get_edge_neighbour(struct gridcell *p_cell, int direction, int permit_create) {
 	struct gridaddr  neighbour_addr;
 	struct gridpage *p_cell_page = gridcell_get_gridpage_and_full_addr(p_cell, &neighbour_addr);
 
@@ -377,10 +386,10 @@ static struct gridcell *gridcell_get_edge_neighbour(struct gridcell *p_cell, int
 	if (gridaddr_edge_neighbour(&neighbour_addr, &neighbour_addr, direction))
 		return NULL;
 
-	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, 1);
+	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, permit_create);
 }
 
-static struct gridcell *gridcell_get_vertex_neighbour(struct gridcell *p_cell, int direction) {
+static struct gridcell *gridcell_get_vertex_neighbour(struct gridcell *p_cell, int direction, int permit_create) {
 	struct gridaddr  neighbour_addr;
 	struct gridpage *p_cell_page = gridcell_get_gridpage_and_full_addr(p_cell, &neighbour_addr);
 
@@ -389,7 +398,7 @@ static struct gridcell *gridcell_get_vertex_neighbour(struct gridcell *p_cell, i
 	if (gridaddr_vertex_neighbour(&neighbour_addr, &neighbour_addr, direction))
 		return NULL;
 
-	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, 1);
+	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, permit_create);
 }
 
 /* Returns the old flags */
@@ -419,16 +428,16 @@ static int gridcell_get_edge_flags(const struct gridcell *p_cell, int direction)
 
 static void gridcell_set_edge_flags_adv(struct gridcell *p_cell, struct gridcell *p_neighbour, int direction, int control) {
 	assert(direction < EDGE_DIR_NUM);
-	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);
+	assert(control != EDGE_TYPE_SENDER && control < EDGE_TYPE_NUM);
 	set_flags(&(p_cell->flags),      0x7, 8+direction*3,                        control);
-	set_flags(&(p_neighbour->flags), 0x7, 8+edge_dir_get_opposing(direction)*3, (control == EDGE_TYPE_NOTHING) ? EDGE_TYPE_NOTHING : EDGE_TYPE_RECEIVER);
+	set_flags(&(p_neighbour->flags), 0x7, 8+edge_dir_get_opposing(direction)*3, (control == EDGE_TYPE_NOTHING) ? EDGE_TYPE_NOTHING : EDGE_TYPE_SENDER);
 	DEBUG_EVAL(gridcell_validate_edge_relationship(p_cell, p_neighbour, direction));
 }
 
 static int gridcell_set_edge_flags(struct gridcell *p_cell, int direction, int control) {
 	struct gridcell *p_neighbour;
-	assert(control != EDGE_TYPE_RECEIVER && control < EDGE_TYPE_NUM);	
-	if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, direction)) == NULL)
+	assert(control != EDGE_TYPE_SENDER && control < EDGE_TYPE_NUM);
+	if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, direction, 1)) == NULL)
 		return 1;
 	gridcell_set_edge_flags_adv(p_cell, p_neighbour, direction, control);
 	return 0;
@@ -446,6 +455,158 @@ static void gridcell_set_vert_flags_adv(struct gridcell *p_cell, struct gridcell
 	set_flags(&(p_neighbour->flags), 0x1, 26+vertex_dir_get_opposing(direction), is_linked);
 }
 
+
+static void mark_net_as_computing_mask(struct gridcell *p_cell) {
+	if ((p_cell->flags & CELLFLAG_IS_COMPUTING_MASK) == 0) {
+		unsigned i;
+		p_cell->flags |= CELLFLAG_IS_COMPUTING_MASK;
+		for (i = 0; i < VERTEX_DIR_NUM; i++) {
+			if ((p_cell->flags >> (26 + i)) & 1) {
+				mark_net_as_computing_mask(gridcell_get_vertex_neighbour(p_cell, i, 0));
+			}
+		}
+	}
+}
+
+static int grid_cell_solve(struct gridcell *p_cell);
+
+static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value) {
+	unsigned i;
+	uint32_t value = p_cell->flags >> CELLFLAG_EXTERNAL_SUPPLY_BIT;
+
+	assert(p_cell->flags & CELLFLAG_IS_COMPUTING_MASK);
+
+	if ((p_cell->flags & CELLFLAG_IS_COMPUTED_MASK))
+		return 0;
+
+	for (i = 0; i < EDGE_DIR_NUM; i++) {
+		int edge_flags = (p_cell->flags >> (8 + 3*i)) & 0x7;
+		struct gridcell *p_neighbour;
+		if (edge_flags == EDGE_TYPE_NOTHING || edge_flags == EDGE_TYPE_SENDER)
+			continue;
+		p_neighbour = gridcell_get_edge_neighbour(p_cell, i, 0);
+		assert(p_neighbour != NULL);
+		if (edge_flags == EDGE_TYPE_RECEIVER_DF)
+			value |= (p_neighbour->flags >> CELLFLAG_DELAY_VALUE_BIT);
+		else if (edge_flags == EDGE_TYPE_RECEIVER_DI) 
+			value |= (~p_neighbour->flags >> CELLFLAG_DELAY_VALUE_BIT);
+		else {
+			if (grid_cell_solve(p_neighbour))
+				return 1;
+			if (edge_flags == EDGE_TYPE_RECEIVER_F)
+				value |= (p_neighbour->flags >> CELLFLAG_CURRENT_VALUE_BIT);
+			else
+				value |= (~p_neighbour->flags >> CELLFLAG_CURRENT_VALUE_BIT);
+		}
+	}
+
+	p_cell->flags |= CELLFLAG_IS_COMPUTED_MASK;
+
+	for (i = 0; i < VERTEX_DIR_NUM; i++) {
+		if ((p_cell->flags >> (26 + i)) & 1)
+			if (solve_net_recursive(gridcell_get_vertex_neighbour(p_cell, i, 0), &value))
+				return 1;
+	}
+
+	if (value)
+		*p_value |= value;
+
+	return 0;
+}
+
+
+static void propagate_solution(struct gridcell *p_cell, uint64_t value_bit) {
+	int i;
+
+	assert(p_cell->flags & CELLFLAG_IS_COMPUTED_MASK);
+
+	if ((p_cell->flags & CELLFLAG_IS_COMPUTING_MASK) == 0)
+		return;
+
+	p_cell->flags = (p_cell->flags & ~(CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_CURRENT_VALUE_MASK)) | value_bit;
+
+	for (i = 0; i < VERTEX_DIR_NUM; i++) {
+		if ((p_cell->flags >> (26 + i)) & 1)
+			propagate_solution(gridcell_get_vertex_neighbour(p_cell, i, 0), value_bit);
+	}
+}
+
+static int grid_cell_solve(struct gridcell *p_cell) {
+	unsigned i;
+	uint32_t netval;
+
+	/* The computing mask bit is set - there is a loop */
+	if (p_cell->flags & CELLFLAG_IS_COMPUTING_MASK)
+		return 1;
+
+	/* Already computed - nothing to do */
+	if (p_cell->flags & CELLFLAG_IS_COMPUTED_MASK)
+		return 0;
+
+	/* Mark all cells in this net as being computed. */
+	mark_net_as_computing_mask(p_cell);
+
+	/* Solve the net */
+	netval = 0;
+	if (solve_net_recursive(p_cell, &netval))
+		return 1;
+
+	/* Clear the flag, set the shared value */
+	propagate_solution(p_cell, (((uint64_t)netval) & 1) << CELLFLAG_CURRENT_VALUE_BIT);
+
+	return 0;
+}
+
+int grid_solve_recursive(struct gridpage *p_root) {
+	int ret = 0;
+	int i;
+	if (p_root == NULL)
+		return 0;
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
+		if ((p_root->data[i].flags & (CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_IS_COMPUTED_MASK)) == 0)
+			ret |= grid_cell_solve(&(p_root->data[i]));
+	}
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		ret |= grid_solve_recursive(p_root->lookups[i]);
+	return ret;
+}
+
+
+static void grid_reset_compute_flags(struct gridpage *p_root) {
+	int i;
+	if (p_root == NULL)
+		return;
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++)
+		p_root->data[i].flags &= ~(uint64_t)(CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_IS_COMPUTED_MASK);
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		grid_reset_compute_flags(p_root->lookups[i]);
+}
+
+static void update_delay_states(struct gridpage *p_root) {
+	int i;
+	if (p_root == NULL)
+		return;
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
+		uint64_t old_flags = p_root->data[i].flags;
+		uint64_t delay_data = ((old_flags >> CELLFLAG_CURRENT_VALUE_BIT) & 1) << CELLFLAG_DELAY_VALUE_BIT;
+		p_root->data[i].flags = (old_flags & ~(uint64_t)CELLFLAG_DELAY_VALUE_MASK) | delay_data;
+	}
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		update_delay_states(p_root->lookups[i]);
+}
+
+int grid_solve(struct gridpage *p_root) {
+	int errors;
+	/* Clear the computed and is computing bits of all cells */
+	grid_reset_compute_flags(p_root);
+	/* Recursively solve */
+	errors = grid_solve_recursive(p_root);
+	/* Update delay states */
+	if (!errors) {
+		update_delay_states(p_root);
+	}
+	return errors;
+};
 
 
 
@@ -502,18 +663,18 @@ int64_t floor_div(int64_t a, int64_t b) {
 static int get_edge_connection_type(struct gridcell *p_cell, int edge_direction) {
 	struct gridcell *p_neighbour;
 	switch (gridcell_get_edge_flags(p_cell, edge_direction)) {
-		case EDGE_TYPE_SENDER_F: return EDGE_SENDING_F;
-		case EDGE_TYPE_SENDER_I: return EDGE_SENDING_I;
-		case EDGE_TYPE_SENDER_DF: return EDGE_SENDING_DF;
-		case EDGE_TYPE_SENDER_DI: return EDGE_SENDING_DI;
-		case EDGE_TYPE_RECEIVER:
-			p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_direction);
+		case EDGE_TYPE_RECEIVER_F: return EDGE_RECEIVING_F;
+		case EDGE_TYPE_RECEIVER_I: return EDGE_RECEIVING_I;
+		case EDGE_TYPE_RECEIVER_DF: return EDGE_RECEIVING_DF;
+		case EDGE_TYPE_RECEIVER_DI: return EDGE_RECEIVING_DI;
+		case EDGE_TYPE_SENDER:
+			p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_direction, 0);
 			assert(p_neighbour != NULL);
 			switch (gridcell_get_edge_flags(p_neighbour, edge_dir_get_opposing(edge_direction))) {
-				case EDGE_TYPE_SENDER_F: return EDGE_RECEIVING_F;
-				case EDGE_TYPE_SENDER_I: return EDGE_RECEIVING_I;
-				case EDGE_TYPE_SENDER_DF: return EDGE_RECEIVING_DF;
-				case EDGE_TYPE_SENDER_DI: return EDGE_RECEIVING_DI;
+				case EDGE_TYPE_RECEIVER_F: return EDGE_SENDING_F;
+				case EDGE_TYPE_RECEIVER_I: return EDGE_SENDING_I;
+				case EDGE_TYPE_RECEIVER_DF: return EDGE_SENDING_DF;
+				case EDGE_TYPE_RECEIVER_DI: return EDGE_SENDING_DI;
 				default:
 					abort();
 			}
@@ -768,6 +929,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 	struct highlighted_cell hc;
 	struct highlighted_cell *p_hc = NULL;
 
+	int errors = 0;
+
 	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x / radius,  mprel.y / radius, &(hc.pos_in_cell))) {
 		float rat = hc.pos_in_cell.y / hc.pos_in_cell.x;
 		hc.edge_idx = EDGE_DIR_N;
@@ -821,16 +984,16 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 				int new_flag;
 				switch (gridcell_get_edge_flags(p_cell, p_hc->edge_idx)) {
 				case EDGE_TYPE_NOTHING:
-					new_flag = EDGE_TYPE_SENDER_F;
+					new_flag = EDGE_TYPE_RECEIVER_F;
 					break;
-				case EDGE_TYPE_SENDER_F:
-					new_flag = EDGE_TYPE_SENDER_I;
+				case EDGE_TYPE_RECEIVER_F:
+					new_flag = EDGE_TYPE_RECEIVER_I;
 					break;
-				case EDGE_TYPE_SENDER_I:
-					new_flag = EDGE_TYPE_SENDER_DF;
+				case EDGE_TYPE_RECEIVER_I:
+					new_flag = EDGE_TYPE_RECEIVER_DF;
 					break;
-				case EDGE_TYPE_SENDER_DF:
-					new_flag = EDGE_TYPE_SENDER_DI;
+				case EDGE_TYPE_RECEIVER_DF:
+					new_flag = EDGE_TYPE_RECEIVER_DI;
 					break;
 				default:
 					new_flag = EDGE_TYPE_NOTHING;
@@ -882,6 +1045,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		}
 	}
 
+
+	errors = grid_solve(p_st->p_root);
 
 
     ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
@@ -942,13 +1107,13 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 				edge_mode_ne = get_edge_connection_type(p_cell, EDGE_DIR_NE);
 				edge_mode_se = get_edge_connection_type(p_cell, EDGE_DIR_SE);
 
-				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_NE);
+				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_NE, 0);
 				if (p_n != NULL) {
 					tunnel_n = gridcell_get_vert_flags(p_n, VERTEX_DIR_W);
 					tunnel_se = gridcell_get_vert_flags(p_n, VERTEX_DIR_SW);
 				}
 
-				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_SE);
+				p_n = gridcell_get_edge_neighbour(p_cell, EDGE_DIR_SE, 0);
 				if (p_n != NULL) {
 					tunnel_ne = gridcell_get_vert_flags(p_n, VERTEX_DIR_NW);
 				}
@@ -1002,12 +1167,27 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 			p_list->AddLine(inner_n1, inner_n2, tunnel_n ? cjoined : cunjoined,    (2 + tunnel_n * 3) * radius / 40);
 			p_list->AddLine(inner_ne1, inner_ne2, tunnel_ne ? cjoined : cunjoined, (2 + tunnel_ne * 3) * radius / 40);
 			p_list->AddLine(inner_se1, inner_se2, tunnel_se ? cjoined : cunjoined, (2 + tunnel_se * 3) * radius / 40);
+
 			draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, -0.866f, radius);
 			draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, -0.433f, radius);
 			draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, +0.433f, radius);
 
 			if (cell_x == 0 && cell_y == 0)
 				p_list->AddCircle(p, radius * 0.5, ImColor(192, 0, 0, 255), 17, 2.0f * radius / 40);
+
+
+
+			if (p_cell != NULL) {
+				if (p_cell->flags & CELLFLAG_IS_COMPUTING_MASK)
+					p_list->AddCircleFilled(p, radius * 0.5, ImColor(255, 0, 128, 255), 17);
+				else if (p_cell->flags & CELLFLAG_CURRENT_VALUE_MASK)
+					p_list->AddCircleFilled(p, radius * 0.1, ImColor(0, 255, 0, 255), 17);
+				else
+					p_list->AddCircleFilled(p, radius * 0.1, ImColor(255, 0, 0, 255), 17);
+			}
+
+
+
 
 			cell_x += 1;
 		} while (1);
@@ -1023,7 +1203,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 
-		ImGui::Text("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d", p_state->mouse_down, mprel.x, mprel.y, (long)(int32_t)p_hc->addr.x, (long)(int32_t)p_hc->addr.y, p_hc->pos_in_cell.x, p_hc->pos_in_cell.y, p_hc->edge_idx);
+		ImGui::Text("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d errors=%d", p_state->mouse_down, mprel.x, mprel.y, (long)(int32_t)p_hc->addr.x, (long)(int32_t)p_hc->addr.y, p_hc->pos_in_cell.x, p_hc->pos_in_cell.y, p_hc->edge_idx, errors);
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
@@ -1085,26 +1265,26 @@ int main(int, char**)
 	if ((p_cell = gridstate_get_gridcell(&gs, &addr, 1)) == NULL)
 		abort();
 
-	for (i = 0; i < 2000; i++) {
+	for (i = 0; i < 30; i++) {
 		struct gridcell *p_neighbour;
 		int edge_ctl;
 		int edge_dir = (pdir = (pdir * 16 + 112 * (rand() % EDGE_DIR_NUM) + 64) / 128);
 		int virt_dir = rand() % VERTEX_DIR_NUM;
 		int virt_ctl = rand() & 1;
 
-		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir)) == NULL)
+		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir, 1)) == NULL)
 			abort();
 		gridcell_set_vert_flags_adv(p_cell, p_neighbour, virt_dir, virt_ctl);
 
-		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir)) == NULL)
+		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir, 1)) == NULL)
 			abort();
 		
 		switch (rand() % 5) {
 			case 0: edge_ctl = EDGE_TYPE_NOTHING; break;
-			case 1: edge_ctl = EDGE_TYPE_SENDER_DF; break;
-			case 2: edge_ctl = EDGE_TYPE_SENDER_DI; break;
-			case 3: edge_ctl = EDGE_TYPE_SENDER_F; break;
-			case 4: edge_ctl = EDGE_TYPE_SENDER_I; break;
+			case 1: edge_ctl = EDGE_TYPE_RECEIVER_DF; break;
+			case 2: edge_ctl = EDGE_TYPE_RECEIVER_DI; break;
+			case 3: edge_ctl = EDGE_TYPE_RECEIVER_F; break;
+			case 4: edge_ctl = EDGE_TYPE_RECEIVER_I; break;
 		}
 
 		gridcell_set_edge_flags_adv(p_cell, p_neighbour, edge_dir, edge_ctl);
