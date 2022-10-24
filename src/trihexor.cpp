@@ -980,7 +980,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 			}
 		}
 
-		hc.b_close_to_edge = fabsf(yp - 0.866f) < 0.2f;
+		hc.b_close_to_edge = fabsf(yp - 0.866f) < 0.16f;
 
 
 
@@ -1029,26 +1029,29 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 						gridcell_set_vert_flags(p_nb, virt_dir, !gridcell_get_vert_flags(p_nb, virt_dir));
 
 				} else {
+					struct gridcell *p_nb;
 					int new_flag;
-					switch (gridcell_get_edge_flags(p_cell, p_hc->edge_idx)) {
-					case EDGE_TYPE_NOTHING:
-						new_flag = EDGE_TYPE_RECEIVER_F;
-						break;
-					case EDGE_TYPE_RECEIVER_F:
-						new_flag = EDGE_TYPE_RECEIVER_I;
-						break;
-					case EDGE_TYPE_RECEIVER_I:
-						new_flag = EDGE_TYPE_RECEIVER_DF;
-						break;
-					case EDGE_TYPE_RECEIVER_DF:
-						new_flag = EDGE_TYPE_RECEIVER_DI;
-						break;
-					default:
-						new_flag = EDGE_TYPE_NOTHING;
-						break;
+					if ((p_nb = gridcell_get_edge_neighbour(p_cell, p_hc->edge_idx, 1)) != NULL) {
+						switch (gridcell_get_edge_flags(p_nb, edge_dir_get_opposing(p_hc->edge_idx))) {
+						case EDGE_TYPE_NOTHING:
+							new_flag = EDGE_TYPE_RECEIVER_F;
+							break;
+						case EDGE_TYPE_RECEIVER_F:
+							new_flag = EDGE_TYPE_RECEIVER_I;
+							break;
+						case EDGE_TYPE_RECEIVER_I:
+							new_flag = EDGE_TYPE_RECEIVER_DF;
+							break;
+						case EDGE_TYPE_RECEIVER_DF:
+							new_flag = EDGE_TYPE_RECEIVER_DI;
+							break;
+						default:
+							new_flag = EDGE_TYPE_NOTHING;
+							break;
+						}
+						gridcell_set_edge_flags_adv(p_nb, p_cell, edge_dir_get_opposing(p_hc->edge_idx), new_flag);
 					}
-					gridcell_set_edge_flags(p_cell, p_hc->edge_idx, new_flag);
-}
+				}
 
 			}
 		}
