@@ -455,6 +455,13 @@ static void gridcell_set_vert_flags_adv(struct gridcell *p_cell, struct gridcell
 	set_flags(&(p_neighbour->flags), 0x1, 26+vertex_dir_get_opposing(direction), is_linked);
 }
 
+static int gridcell_set_vert_flags(struct gridcell *p_cell, int direction, int is_linked) {
+	struct gridcell *p_neighbour;
+	if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, direction, 1)) == NULL)
+		return 1;
+	gridcell_set_vert_flags_adv(p_cell, p_neighbour, direction, is_linked);
+	return 0;
+}
 
 static void mark_net_as_computing_mask(struct gridcell *p_cell) {
 	if ((p_cell->flags & CELLFLAG_IS_COMPUTING_MASK) == 0) {
@@ -891,9 +898,16 @@ struct highlighted_cell {
 	ImVec2          pos_in_cell;
 
 	int edge_idx;
-
-
+	int b_close_to_edge;
+	
 };
+
+static void vmpy(float *p_x, float *p_y, float x2, float y2) {
+	float x1 = *p_x;
+	float y1 = *p_y;
+	*p_x = x1 * x2 - y1 * y2;
+	*p_y = x1 * y2 + y1 * x2;
+}
 
 void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 {
@@ -934,25 +948,41 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x / radius,  mprel.y / radius, &(hc.pos_in_cell))) {
 		float rat = hc.pos_in_cell.y / hc.pos_in_cell.x;
 		hc.edge_idx = EDGE_DIR_N;
+
+		float xp  = hc.pos_in_cell.x;
+		float yp  = hc.pos_in_cell.y;
+
 		if (hc.pos_in_cell.x > 0) {
-			if (rat > 1.732)
-				hc.edge_idx = EDGE_DIR_N;
-			else if (rat < -1.732)
-				hc.edge_idx = EDGE_DIR_S;
-			else if (rat > 0.0f)
+			if (rat > 1.732) {
+				hc.edge_idx = EDGE_DIR_N;    /* -0.5,0.866 -> -0.5, 0.866 */
+			} else if (rat < -1.732) {
+				hc.edge_idx = EDGE_DIR_S;    /* 0.5,-0.866 -> -0.5, 0.866 */
+				vmpy(&xp, &yp, -1.0f, 0.0f);
+			} else if (rat > 0.0f) {
 				hc.edge_idx = EDGE_DIR_NE;
-			else
+				vmpy(&xp, &yp, 0.5f, 0.866f); /* 0.5,0.866 -> -0.5,0.866 */
+			} else {
 				hc.edge_idx = EDGE_DIR_SE;
+				vmpy(&xp, &yp, -0.5f, 0.866f); /* 1.0,0.0 -> -0.5,0.866 */
+			}
 		} else {
-			if (rat > 1.732)
+			if (rat > 1.732) {
 				hc.edge_idx = EDGE_DIR_S;
-			else if (rat < -1.732)
+				vmpy(&xp, &yp, -1.0f, 0.0f);
+			} else if (rat < -1.732) {
 				hc.edge_idx = EDGE_DIR_N;
-			else if (rat > 0.0f)
+			} else if (rat > 0.0f) {
 				hc.edge_idx = EDGE_DIR_SW;
-			else
+				vmpy(&xp, &yp, -0.5f, -0.866f); /* 1.0,0.0 -> -0.5,0.866 */
+			} else {
 				hc.edge_idx = EDGE_DIR_NW;
+				vmpy(&xp, &yp, 0.5f, -0.866f); /* 1.0,0.0 -> -0.5,0.866 */
+			}
 		}
+
+		hc.b_close_to_edge = fabsf(yp - 0.866f) < 0.2f;
+
+
 
 		p_hc = &hc;
 	}
@@ -981,25 +1011,45 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		if (g.IO.MouseClicked[1] && p_hc != NULL) {
 			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 1);
 			if (p_cell != NULL) {
-				int new_flag;
-				switch (gridcell_get_edge_flags(p_cell, p_hc->edge_idx)) {
-				case EDGE_TYPE_NOTHING:
-					new_flag = EDGE_TYPE_RECEIVER_F;
-					break;
-				case EDGE_TYPE_RECEIVER_F:
-					new_flag = EDGE_TYPE_RECEIVER_I;
-					break;
-				case EDGE_TYPE_RECEIVER_I:
-					new_flag = EDGE_TYPE_RECEIVER_DF;
-					break;
-				case EDGE_TYPE_RECEIVER_DF:
-					new_flag = EDGE_TYPE_RECEIVER_DI;
-					break;
-				default:
-					new_flag = EDGE_TYPE_NOTHING;
-					break;
-				}
-				gridcell_set_edge_flags(p_cell, p_hc->edge_idx, new_flag);
+				if (p_hc->b_close_to_edge) {
+					int get_edge_dir;
+					int virt_dir;
+					struct gridcell *p_nb;
+					switch (p_hc->edge_idx) {
+					case EDGE_DIR_N:  get_edge_dir = EDGE_DIR_NE; virt_dir = VERTEX_DIR_W; break;
+					case EDGE_DIR_NE: get_edge_dir = EDGE_DIR_SE; virt_dir = VERTEX_DIR_NW; break;
+					case EDGE_DIR_SE: get_edge_dir = EDGE_DIR_S;  virt_dir = VERTEX_DIR_NE; break;
+					case EDGE_DIR_S:  get_edge_dir = EDGE_DIR_SW; virt_dir = VERTEX_DIR_E; break;
+					case EDGE_DIR_SW: get_edge_dir = EDGE_DIR_NW; virt_dir = VERTEX_DIR_SE; break;
+					case EDGE_DIR_NW: get_edge_dir = EDGE_DIR_N;  virt_dir = VERTEX_DIR_SW; break;
+					default:
+						abort();
+					}
+					if ((p_nb = gridcell_get_edge_neighbour(p_cell, get_edge_dir, 1)) != NULL)
+						gridcell_set_vert_flags(p_nb, virt_dir, !gridcell_get_vert_flags(p_nb, virt_dir));
+
+				} else {
+					int new_flag;
+					switch (gridcell_get_edge_flags(p_cell, p_hc->edge_idx)) {
+					case EDGE_TYPE_NOTHING:
+						new_flag = EDGE_TYPE_RECEIVER_F;
+						break;
+					case EDGE_TYPE_RECEIVER_F:
+						new_flag = EDGE_TYPE_RECEIVER_I;
+						break;
+					case EDGE_TYPE_RECEIVER_I:
+						new_flag = EDGE_TYPE_RECEIVER_DF;
+						break;
+					case EDGE_TYPE_RECEIVER_DF:
+						new_flag = EDGE_TYPE_RECEIVER_DI;
+						break;
+					default:
+						new_flag = EDGE_TYPE_NOTHING;
+						break;
+					}
+					gridcell_set_edge_flags(p_cell, p_hc->edge_idx, new_flag);
+}
+
 			}
 		}
 
@@ -1182,8 +1232,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 					p_list->AddCircleFilled(p, radius * 0.5, ImColor(255, 0, 128, 255), 17);
 				else if (p_cell->flags & CELLFLAG_CURRENT_VALUE_MASK)
 					p_list->AddCircleFilled(p, radius * 0.1, ImColor(0, 255, 0, 255), 17);
-				else
-					p_list->AddCircleFilled(p, radius * 0.1, ImColor(255, 0, 0, 255), 17);
+
 			}
 
 
@@ -1203,7 +1252,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 
-		ImGui::Text("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d errors=%d", p_state->mouse_down, mprel.x, mprel.y, (long)(int32_t)p_hc->addr.x, (long)(int32_t)p_hc->addr.y, p_hc->pos_in_cell.x, p_hc->pos_in_cell.y, p_hc->edge_idx, errors);
+		ImGui::Text("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d errors=%d vert=%d", p_state->mouse_down, mprel.x, mprel.y, (long)(int32_t)p_hc->addr.x, (long)(int32_t)p_hc->addr.y, p_hc->pos_in_cell.x, p_hc->pos_in_cell.y, p_hc->edge_idx, errors, p_hc->b_close_to_edge);
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
