@@ -212,20 +212,22 @@ struct gridcell {
 	 * 33    - PREVIOUS_VALUE
 	 * 34    - EXTERNAL_SUPPLY
 	 * 35    - IS_COMPUTING_VALUE
-	 * 36    - VALUE_IS_COMPUTED */
+	 * 36    - VALUE_IS_COMPUTED
+	 * 37    - VISITED_TEMP */
+
 
 	uint64_t         flags;
 
 };
 
-#define CELLFLAG_EXTERNAL_SUPPLY_BIT  (34)
-#define CELLFLAG_EXTERNAL_SUPPLY_MASK (1ull << CELLFLAG_EXTERNAL_SUPPLY_BIT)
 #define CELLFLAG_CURRENT_VALUE_BIT    (32)
 #define CELLFLAG_CURRENT_VALUE_MASK   (1ull << CELLFLAG_CURRENT_VALUE_BIT)
-#define CELLFLAG_IS_COMPUTING_MASK    (1ull << 35)
-#define CELLFLAG_IS_COMPUTED_MASK     (1ull << 36)
 #define CELLFLAG_DELAY_VALUE_BIT      (33)
 #define CELLFLAG_DELAY_VALUE_MASK     (1ull << CELLFLAG_DELAY_VALUE_BIT)
+#define CELLFLAG_EXTERNAL_SUPPLY_BIT  (34)
+#define CELLFLAG_EXTERNAL_SUPPLY_MASK (1ull << CELLFLAG_EXTERNAL_SUPPLY_BIT)
+#define CELLFLAG_IS_COMPUTING_MASK    (1ull << 35)
+#define CELLFLAG_IS_COMPUTED_MASK     (1ull << 36)
 
 static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_file, const int line) {
 	if (!condition) {
@@ -251,13 +253,29 @@ struct gridpage {
 
 };
 
+struct solve_stats {
+	/* Grid dimensions */
+	int32_t min_x;
+	int32_t max_x;
+	int32_t min_y;
+	int32_t max_y;
+
+	int32_t num_edgeops;
+	int32_t num_vertops;
+	int32_t num_cells;
+
+};
+
 struct gridstate {
-	struct gridpage *p_root;
+	struct gridpage    *p_root;
+	int                 stats_ok;
+	struct solve_stats  stats;
 
 };
 
 void gridstate_init(struct gridstate *p_gridstate) {
 	p_gridstate->p_root = NULL;
+	p_gridstate->stats_ok = 0;
 }
 
 static uint64_t xy_to_id(uint32_t x, uint32_t y) {
@@ -475,22 +493,48 @@ static void mark_net_as_computing_mask(struct gridcell *p_cell) {
 	}
 }
 
-static int grid_cell_solve(struct gridcell *p_cell);
 
-static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value) {
+static int grid_cell_solve(struct gridcell *p_cell, struct solve_stats *p_stats);
+
+static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value, struct solve_stats *p_stats) {
 	unsigned i;
 	uint32_t value = p_cell->flags >> CELLFLAG_EXTERNAL_SUPPLY_BIT;
 
 	assert(p_cell->flags & CELLFLAG_IS_COMPUTING_MASK);
 
-	if ((p_cell->flags & CELLFLAG_IS_COMPUTED_MASK))
+	if (p_cell->flags & CELLFLAG_IS_COMPUTED_MASK)
 		return 0;
+
+	if (p_cell->flags & (0xFFFFFF00 | CELLFLAG_EXTERNAL_SUPPLY_MASK)) {
+		struct gridaddr addr;
+		(void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
+
+		int32_t x = (int32_t)addr.x;
+		int32_t y = (int32_t)addr.y;
+
+		if (p_stats->num_cells++ == 0) {
+			p_stats->max_x = x;
+			p_stats->max_y = y;
+			p_stats->min_x = x;
+			p_stats->min_y = y;
+		} else {
+			if (x < p_stats->min_x)
+				p_stats->min_x = x;
+			else if (x > p_stats->max_x)
+				p_stats->max_x = x;
+			if (y < p_stats->min_y)
+				p_stats->min_y = y;
+			else if (y > p_stats->max_y)
+				p_stats->max_y = y;
+		}
+	}
 
 	for (i = 0; i < EDGE_DIR_NUM; i++) {
 		int edge_flags = (p_cell->flags >> (8 + 3*i)) & 0x7;
 		struct gridcell *p_neighbour;
 		if (edge_flags == EDGE_TYPE_NOTHING || edge_flags == EDGE_TYPE_SENDER)
 			continue;
+		p_stats->num_edgeops++;
 		p_neighbour = gridcell_get_edge_neighbour(p_cell, i, 0);
 		assert(p_neighbour != NULL);
 		if (edge_flags == EDGE_TYPE_RECEIVER_DF)
@@ -498,7 +542,7 @@ static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value) {
 		else if (edge_flags == EDGE_TYPE_RECEIVER_DI) 
 			value |= (~p_neighbour->flags >> CELLFLAG_DELAY_VALUE_BIT);
 		else {
-			if (grid_cell_solve(p_neighbour))
+			if (grid_cell_solve(p_neighbour, p_stats))
 				return 1;
 			if (edge_flags == EDGE_TYPE_RECEIVER_F)
 				value |= (p_neighbour->flags >> CELLFLAG_CURRENT_VALUE_BIT);
@@ -510,9 +554,12 @@ static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value) {
 	p_cell->flags |= CELLFLAG_IS_COMPUTED_MASK;
 
 	for (i = 0; i < VERTEX_DIR_NUM; i++) {
-		if ((p_cell->flags >> (26 + i)) & 1)
-			if (solve_net_recursive(gridcell_get_vertex_neighbour(p_cell, i, 0), &value))
+		if ((p_cell->flags >> (26 + i)) & 1) {
+			if (i < 3)
+				p_stats->num_vertops++;
+			if (solve_net_recursive(gridcell_get_vertex_neighbour(p_cell, i, 0), &value, p_stats))
 				return 1;
+		}
 	}
 
 	if (value)
@@ -538,7 +585,7 @@ static void propagate_solution(struct gridcell *p_cell, uint64_t value_bit) {
 	}
 }
 
-static int grid_cell_solve(struct gridcell *p_cell) {
+static int grid_cell_solve(struct gridcell *p_cell, struct solve_stats *p_stats) {
 	unsigned i;
 	uint32_t netval;
 
@@ -555,7 +602,7 @@ static int grid_cell_solve(struct gridcell *p_cell) {
 
 	/* Solve the net */
 	netval = 0;
-	if (solve_net_recursive(p_cell, &netval))
+	if (solve_net_recursive(p_cell, &netval, p_stats))
 		return 1;
 
 	/* Clear the flag, set the shared value */
@@ -564,17 +611,17 @@ static int grid_cell_solve(struct gridcell *p_cell) {
 	return 0;
 }
 
-int grid_solve_recursive(struct gridpage *p_root) {
+int grid_solve_recursive(struct gridpage *p_root, struct solve_stats *p_stats) {
 	int ret = 0;
 	int i;
 	if (p_root == NULL)
 		return 0;
 	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
 		if ((p_root->data[i].flags & (CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_IS_COMPUTED_MASK)) == 0)
-			ret |= grid_cell_solve(&(p_root->data[i]));
+			ret |= grid_cell_solve(&(p_root->data[i]), p_stats);
 	}
 	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		ret |= grid_solve_recursive(p_root->lookups[i]);
+		ret |= grid_solve_recursive(p_root->lookups[i], p_stats);
 	return ret;
 }
 
@@ -602,19 +649,104 @@ static void update_delay_states(struct gridpage *p_root) {
 		update_delay_states(p_root->lookups[i]);
 }
 
-int grid_solve(struct gridpage *p_root) {
+int grid_solve(struct gridstate *p_gs) {
 	int errors;
 	/* Clear the computed and is computing bits of all cells */
-	grid_reset_compute_flags(p_root);
+	grid_reset_compute_flags(p_gs->p_root);
 	/* Recursively solve */
-	errors = grid_solve_recursive(p_root);
+	p_gs->stats.max_x = 0;
+	p_gs->stats.max_y = 0;
+	p_gs->stats.min_x = 0;
+	p_gs->stats.min_y = 0;
+	p_gs->stats.num_edgeops = 0;
+	p_gs->stats.num_vertops = 0;
+	p_gs->stats.num_cells   = 0;
+	p_gs->stats_ok = 0;
+	errors = grid_solve_recursive(p_gs->p_root, &(p_gs->stats));
 	/* Update delay states */
 	if (!errors) {
-		update_delay_states(p_root);
+		update_delay_states(p_gs->p_root);
+		p_gs->stats_ok = 1;
 	}
 	return errors;
 };
 
+#define STORAGE_FLAG_MASK (CELLFLAG_EXTERNAL_SUPPLY_MASK | 0xFFFFFF00)
+
+static int grid_save_rec(FILE *p_f, struct gridpage *p_page) {
+	int i;
+
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
+		uint64_t storage_flags;
+		struct gridaddr addr;
+
+		if ((storage_flags = p_page->data[i].flags & STORAGE_FLAG_MASK) == 0)
+			continue;
+
+		addr.x = p_page->position.x | (i & PAGE_X_MASK);
+		addr.y = p_page->position.y | (i >> PAGE_XY_BITS);
+
+		if (fwrite(&addr, sizeof(addr), 1, p_f) != 1 || fwrite(&storage_flags, sizeof(storage_flags), 1, p_f) != 1)
+			return 1;
+	}
+
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		if (p_page->lookups[i] != NULL)
+			if (grid_save_rec(p_f, p_page->lookups[i]))
+				return 1;
+
+	return 0;
+}
+
+static int grid_save(struct gridstate *p_state, const char *p_filename) {
+	FILE *p_f = fopen(p_filename, "wb");
+	int failed = 0;
+	if (p_f == NULL)
+		return 1;
+	if (p_state->p_root != NULL)
+		failed = grid_save_rec(p_f, p_state->p_root);
+	return fclose(p_f) || failed;
+}
+
+static int grid_load_file(struct gridstate *p_grid, FILE *p_f) {
+	do {
+		uint64_t storage_flags;
+		struct gridaddr addr;
+		struct gridcell *p_cell;
+		int i;
+
+		if (fread(&addr, sizeof(addr), 1, p_f) != 1 || fread(&storage_flags, sizeof(storage_flags), 1, p_f) != 1)
+			return 0;
+
+		printf("read %ld,%ld,%llu\n", (long)(int32_t)addr.x, (long)(int32_t)addr.y, (unsigned long long)storage_flags);
+		if ((p_cell = gridstate_get_gridcell(p_grid, &addr, 1)) == NULL)
+			return 1;
+
+		for (i = 0; i < VERTEX_DIR_NUM; i++) {
+			int ctl = (storage_flags >> (26 + i)) & 0x1;
+			if (gridcell_set_vert_flags(p_cell, i, ctl))
+				return 1;
+		}
+
+		for (i = 0; i < EDGE_DIR_NUM; i++) {
+			int ctl = (storage_flags >> (8 + 3*i)) & 0x7;
+			if (ctl != EDGE_TYPE_SENDER && gridcell_set_edge_flags(p_cell, i, ctl))
+				return 1;
+		}
+
+	} while (1);
+	return 1;
+}
+
+static int grid_load(struct gridstate *p_state, const char *p_filename) {
+	FILE *p_f = fopen(p_filename, "rb");
+	int failed = 0;
+	if (p_f == NULL)
+		return 1;
+	failed = grid_load_file(p_state, p_f);
+	fclose(p_f);
+	return failed;
+}
 
 
 int gridpage_dump(struct gridpage *p_page, unsigned tree_location, int *p_nodes) {
@@ -1098,8 +1230,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		}
 	}
 
-
-	errors = grid_solve(p_st->p_root);
+	errors = grid_solve(p_st);
 
 
     ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), true, style.FrameRounding);
@@ -1260,13 +1391,12 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state)
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
-
 }
 
 
 
 
-int main(int, char**)
+int main(int argc, char **argv)
 {
 /*
 	int i;
@@ -1303,14 +1433,15 @@ int main(int, char**)
 		abort();
 
 #endif
-#if 1
 	struct gridstate  gs;
+	gridstate_init(&gs);
+
+#if 0
 	struct gridaddr   addr;
 	struct gridcell  *p_cell;
 	int i;
 	uint32_t pdir = 0;
 
-	gridstate_init(&gs);
 
 	addr.x = 0;
 	addr.y = 0;
@@ -1349,6 +1480,12 @@ int main(int, char**)
 	i = 0;
 	printf("DEPTH = %d\n", gridpage_dump(gs.p_root, 1, &i));
 	printf("NODES = %d\n", i);
+#else
+	if (grid_load(&gs, "startup.grid")) {
+		printf("failed to load from startup.grid\n");
+	} else {
+		printf("loaded startup.grid\n");
+	}
 
 #endif
 
@@ -1483,8 +1620,23 @@ int main(int, char**)
 
 
 		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-
 		plot_grid(&gs, &plot_state);
+		if (gs.stats_ok) {
+			int64_t width = gs.stats.max_x - (int64_t)gs.stats.min_x + 1;
+			int64_t height = gs.stats.max_y - (int64_t)gs.stats.min_y + 1;
+			ImGui::SameLine();
+			ImGui::BeginGroup();
+			ImGui::Text("Grid Width: %lld", (long long)width);
+			ImGui::Text("Grid Height: %lld", (long long)height);
+			ImGui::Text("Grid Area: %lld", (long long)width * height);
+			ImGui::Text("Total Cells: %ld", (long)gs.stats.num_cells);
+			ImGui::Text("Area Efficiency %f", gs.stats.num_cells * 100.0f / (float)(width * height));
+			ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
+			ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
+			ImGui::EndGroup();
+
+		}
+		ImGui::End();
 
 		// Rendering
 		ImGui::Render();
@@ -1496,6 +1648,14 @@ int main(int, char**)
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
 		glfwSwapBuffers(window);
+	}
+
+	if (argc > 1) {
+		if (grid_save(&gs, argv[1])) {
+			printf("failed to save grid to %s\n", argv[1]);
+		} else {
+			printf("saved grid to %s\n", argv[1]);
+		}
 	}
 
 	// Cleanup
