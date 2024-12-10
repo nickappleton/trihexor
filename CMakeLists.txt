@@ -20,3 +20,14 @@ add_executable(trihexor
 target_link_libraries(trihexor PRIVATE imgui::imgui glfw::glfw opengl::opengl)
 target_include_directories(trihexor PRIVATE "${imgui_RES_DIRS}/bindings")
 target_compile_options(trihexor PRIVATE "-Wextra")
+
+add_executable(trihexor2
+    src/trihexor2.cpp
+    "${imgui_RES_DIRS}/bindings/imgui_impl_glfw.cpp"
+    "${imgui_RES_DIRS}/bindings/imgui_impl_glfw.h"
+    "${imgui_RES_DIRS}/bindings/imgui_impl_opengl3.cpp"
+    "${imgui_RES_DIRS}/bindings/imgui_impl_opengl3.h"
+    )
+target_link_libraries(trihexor2 PRIVATE imgui::imgui glfw::glfw opengl::opengl)
+target_include_directories(trihexor2 PRIVATE "${imgui_RES_DIRS}/bindings")
+target_compile_options(trihexor2 PRIVATE "-Wextra")
