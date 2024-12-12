@@ -30,4 +30,4 @@ add_executable(trihexor2
     )
 target_link_libraries(trihexor2 PRIVATE imgui::imgui glfw::glfw opengl::opengl)
 target_include_directories(trihexor2 PRIVATE "${imgui_RES_DIRS}/bindings")
-target_compile_options(trihexor2 PRIVATE "-Wextra")
+target_compile_options(trihexor2 PRIVATE "-Wextra" -Wall)

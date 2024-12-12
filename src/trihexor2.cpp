@@ -187,7 +187,6 @@ static int gridaddr_edge_neighbour(struct gridaddr *p_dest, const struct gridadd
 		,   {-1,    0} /* SW */
 		,   {0,     0} /* S */
 		};
-	struct gridaddr offset;
 	assert(edge_direction < EDGE_DIR_NUM);
 	return gridaddr_add_check(p_dest, p_src, x_offsets[edge_direction][p_src->y & 1], y_offsets[edge_direction]);
 }
@@ -377,6 +376,7 @@ static uint64_t gridaddr_to_id(const struct gridaddr *p_addr) {
 	return (umix >> 48) ^ umix;
 }
 
+#if 0
 static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y, uint32_t *p_z) {
 	uint64_t umix = (id >> 48) ^ id;
 	uint64_t grp = umix * 7426732773883044305ull;
@@ -385,6 +385,7 @@ static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y, uint32_t *p_z) {
 	*p_x = (uint32_t)(grp & 0x7FFFFFFF);
 	assert(*p_z < 3);
 }
+#endif
 
 static void verify_gridpage(struct gridpage *p_page) {
 	size_t i;
@@ -478,13 +479,12 @@ static struct gridcell *gridpage_get_gridcell(struct gridpage *p_page, const str
 	return &(p_page->data[page_index]);
 }
 
+#if 0
 static struct gridcell *gridcell_get_gridcell(struct gridcell *p_cell, const struct gridaddr *p_addr, int permit_create) {
-	struct gridpage *p_page;
 	uint32_t         page_index = gridcell_get_page_index(p_cell);
 	return gridpage_get_gridcell((struct gridpage *)(p_cell - page_index), p_addr, permit_create);
 }
 
-#if 0
 static void gridcell_validate_edge_relationship(struct gridcell *p_local, struct gridcell *p_neighbour, int local_to_neighbour_direction) {
 	int neighbour_to_local_direction = get_opposing_edge_id(local_to_neighbour_direction);
 	int neighbour_edge_control       = (p_neighbour->flags >> (8 + neighbour_to_local_direction * 3)) & 0x7;
@@ -576,7 +576,16 @@ static void gridcell_are_layers_fused_toggle(struct gridcell *p_gc) {
 
 
 
+struct program_net {
+	uint32_t net_id;
+	uint32_t first_cell_stack_index;
+	uint32_t cell_count;
+	uint32_t current_solve_cell;
+	uint32_t current_solve_edge;
+	uint32_t b_currently_in_solve_stack;
+	uint32_t b_exists_in_cycle;
 
+};
 
 struct program {
 	uint32_t *p_code;
@@ -588,6 +597,12 @@ struct program {
 	uint32_t *p_data;
 	uint32_t *p_last_data;
 	size_t    alloc_data_count;
+
+	/* net list */
+	struct program_net **pp_netstack;
+	struct program_net  *p_nets;
+	size_t               net_alloc_count;
+	size_t               net_count;
 
 	/* stack */
 	void            **pp_stack;
@@ -632,15 +647,39 @@ static void program_init(struct program *p_program) {
 	p_program->p_data        = NULL;
 	p_program->p_last_data   = NULL;
 	p_program->pp_stack      = NULL;
+	p_program->p_nets        = NULL;
+	p_program->pp_netstack   = NULL;
 
 	p_program->alloc_code_words  = 0;
 	p_program->alloc_data_count  = 0;
 	p_program->stack_alloc_count = 0;
+	p_program->net_alloc_count   = 0;
+	p_program->net_count         = 0;
 
 	p_program->stack_count = 0;
 	p_program->code_words  = 0;
 	p_program->bit_count   = 0;
 
+}
+
+static
+struct program_net *
+program_net_push(struct program *p_program) {
+	if (p_program->net_count >= p_program->net_alloc_count) {
+		struct program_net *p_new_nets;
+		struct program_net **pp_new_netstack;
+		size_t newsz = ((p_program->net_alloc_count * 4) / 3) & ~(size_t)0xff;
+		if (newsz < 1024)
+			newsz = 1024;
+		if ((p_new_nets = (struct program_net *)realloc(p_program->p_nets, sizeof(struct program_net) * newsz)) == NULL)
+			abort();
+		if ((pp_new_netstack = (struct program_net **)realloc(p_program->pp_netstack, sizeof(struct program_net *) * newsz)) == NULL)
+			abort();
+		p_program->net_alloc_count = newsz;
+		p_program->pp_netstack = pp_new_netstack;
+		p_program->p_nets = p_new_nets;
+	}
+	return &(p_program->p_nets[p_program->net_count++]);
 }
 
 static void program_stack_push(struct program *p_program, void *p_ptr) {
@@ -651,7 +690,8 @@ static void program_stack_push(struct program *p_program, void *p_ptr) {
 			newsz = 1024;
 		if ((pp_new_list = (void **)realloc(p_program->pp_stack, newsz*sizeof(void *))) == NULL)
 			abort();
-		p_program->pp_stack = pp_new_list;
+		p_program->pp_stack          = pp_new_list;
+		p_program->stack_alloc_count = newsz;
 	}
 	p_program->pp_stack[p_program->stack_count++] = p_ptr;
 }
@@ -668,7 +708,6 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
 			uint32_t         page_index    = page_index_base | (i << 8);
 			uint64_t         index_in_list = p_page->data[page_index].data >> 32;
 			uint32_t         new_index     = (*p_insidx)++;
-			struct gridcell *p_tmp;
 
 			/* if the merged layer bit is set on one layer, it must be set on all! */
 			assert(p_page->data[page_index].data & GRIDCELL_BIT_MERGED_LAYERS);
@@ -688,7 +727,6 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
 			pp_list_base[new_index]->data     = (pp_list_base[new_index]->data & ~GRIDCELL_NET_ID_BITS) | compute_flag_and_net_id_bits;
 		}
 	} else {
-		uint64_t index_in_list = pp_list_base[idx]->data >> 32;
 		uint32_t new_index     = (*p_insidx)++;
 
 		assert((pp_list_base[idx]->data & GRIDCELL_BIT_COMPUTING) == 0);
@@ -711,8 +749,10 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	size_t            num_grid_pages;
 	size_t            num_cells;
 	struct gridcell **pp_list_base;
+	int               num_broken_nets = 0;
 
 	p_program->stack_count = 0;
+	p_program->net_count = 0;
 
 	/* no nodes, no problems. */
 	if (p_gridstate->p_root == NULL)
@@ -749,21 +789,33 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				program_stack_push(p_program, &(p_gp->data[j]));
 			}
 		}
+
+		/* note to future self - DO NOT CALL program_stack_push after this
+		 * it could change the base pointer of pp_stack. */
 		pp_list_base = (struct gridcell **)&(p_program->pp_stack[num_grid_pages]);
 	}
 
 	printf("added %llu cells\n", (unsigned long long)num_cells);
 
 	/* 3) sort the list into groups sharing a common net. reassign the net
-	 * ids to be actual net ids. this will set all the compute bits. */
+	 * ids to be actual net ids. this will set all the compute bits. in this
+	 * step, the GRIDCELL_BIT_COMPUTING effectively idenfies if the net_id
+	 * bits of the cell are an actual net id as opposed to the index of the
+	 * cell in the list. */
 	{
-		uint64_t          net_id;
-		uint32_t          group_pos, group_end;
+		uint32_t group_pos;
 		group_pos   = 0;
-		net_id      = 0;
 		while (group_pos < num_cells) {
-			uint64_t compute_flag_and_net_id_bits = GRIDCELL_BIT_COMPUTING | (net_id << 32);
-			group_end = group_pos;
+			uint32_t            group_end                    = group_pos;
+			uint64_t            net_id                       = p_program->net_count; /* must be read before calling program_net_push() */
+			uint64_t            compute_flag_and_net_id_bits = GRIDCELL_BIT_COMPUTING | (net_id << 32);
+			struct program_net *p_net                        = program_net_push(p_program);
+			p_net->net_id    = net_id;
+			p_net->b_currently_in_solve_stack = 0;
+			p_net->first_cell_stack_index = group_pos;
+			p_net->current_solve_cell = 0;
+			p_net->current_solve_edge = 0;
+			p_net->b_exists_in_cycle = 0;
 			move_cell_and_layers(pp_list_base, group_pos, &group_end, compute_flag_and_net_id_bits);
 			do {
 				int i;
@@ -779,54 +831,243 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				}
 				group_pos++;
 			} while (group_pos < group_end);
-			net_id++;
+			p_net->cell_count = group_pos - p_net->first_cell_stack_index;
+			p_net->first_cell_stack_index += num_grid_pages; /* ensure offset is applied past the grid pages at the start. */
 		}
-		{
-			uint32_t i;
-			printf("found %llu nets\n", (unsigned long long)net_id);
-			printf("  netid     cell address (x, y, layer)\n");
-			for (i = 0; i < num_cells; i++) {
-				struct gridaddr addr;
-				(void)gridcell_get_gridpage_and_full_addr(pp_list_base[i], &addr);
-				printf
-					("  %10lu (%ld, %ld, %ld)\n"
-					,(unsigned long)(pp_list_base[i]->data >> 32)
-					,(long)addr.x - (long)0x40000000
-					,(long)addr.y - (long)0x40000000
-					,(long)addr.z
-					);
+	}
+
+	/* at this point, all cells are assigned to nets. */
+
+	/* 4) order the nets such that they are all solvable and detect if the
+	 * program is broken (has loops not broken by delays). */
+	{
+		size_t i;
+
+		/* The stack array is used for two things. The part that grows up is
+		 * used to track where we are in traversing the nets. The part that
+		 * grows down is completely processed nets. As such, once this
+		 * process ends, the nets can be evaluated from the end to the
+		 * beginning of the list knowing that dependencies will be
+		 * satisfied perfectly. */
+		size_t end_of_stack_pointer = p_program->net_count;
+
+		/* This is truely horrible - but seems to work. We first loop over
+		 * nets - the purpose of this loop is to identify starting points
+		 * which are nets that have not been processed. This could happen
+		 * for a circuit which has distinct and disconnected sections. */
+		for (i = 0; i < p_program->net_count; i++) {
+			size_t stack_size;
+
+			/* already solved? nothing to do here. */
+			if (p_program->p_nets[i].current_solve_cell == p_program->p_nets[i].cell_count)
+				continue;
+
+			/* If it isn't fully solved, it had better be completely
+			 * unsolved and never touched or this code is totally busted. */
+			assert(p_program->p_nets[i].current_solve_cell == 0 && p_program->p_nets[i].current_solve_edge == 0);
+
+			/* If it is marked as being in the stack - something has gone
+			 * completely wrong. */
+			assert(p_program->p_nets[i].b_currently_in_solve_stack == 0);
+
+			/* Okay, we have found a net that has not been seen before. We
+			 * really only care about things that feed into this net, that
+			 * is what we care about. If there are other nets that consume
+			 * from this one, whatever, we can find it later in the outer
+			 * for loop - no problem. But here, what we want to do is fully
+			 * explore the nets that feed into recursively and without
+			 * delay (delay always breaks cycles). Start by pushing this
+			 * net onto the top of the stack and mark it as being in the
+			 * stack (this is how we discover cycles and are able to mark
+			 * all nets which take part in a cycle - if we have a stack
+			 * of nodes poking outwards to a source and we hit a net which
+			 * says it is already in the stack, there is some line of nets
+			 * in the stack which form a loop). */
+			stack_size = 1;
+			p_program->pp_netstack[0] = &(p_program->p_nets[i]);
+			p_program->p_nets[i].b_currently_in_solve_stack = 1;
+
+			while (stack_size) {
+				/* Get the net on the very top of the stack. */
+				struct program_net *p_this_net = p_program->pp_netstack[stack_size - 1];
+				
+				/* First look to see if this node has now been completely
+				 * solved (read the code as this implies that all the
+				 * dependencies have also been completely solved). If it has,
+				 * we can pop it to the backwards-growing end of the stack
+				 * and it is completely done. This while() loop forms a bit
+				 * of a state machine using the stack_size and the
+				 * current_solve_cell and current_solve_edge members of the
+				 * nets. Each iteration processes exactly one edge *or*
+				 * discards one net from the stack (i.e. puts it in the
+				 * finish list). */
+				if (p_this_net->current_solve_cell == p_this_net->cell_count) {
+					/* This net is finished - put at the end of the stack array */
+
+					assert(p_this_net->current_solve_edge == 0);
+
+					/* We're totally stuffed if somehow this got to zero. It
+					 * means we visited something/somethings more than once. */
+					assert(end_of_stack_pointer);
+
+					/* Put the net at the end of the stack. Mark it as no
+					 * longer in the list (other nodes can now reference this
+					 * net whenever). */
+					p_program->pp_netstack[--end_of_stack_pointer] = p_this_net;
+					p_this_net->b_currently_in_solve_stack = 0; /* finished. */
+					stack_size--;
+				} else {
+					/* The net on the top of the stack is not finished yet and
+					 * we have more edges to process. */
+					uint32_t            cell_idx;
+					struct gridcell    *p_cell;
+					int                 edge_id, edge_type;
+
+					/* Either we should still be looking at edges in a valid
+					 * cell within the net or we should be finished (which is
+					 * handled in the block prior to the else). */
+					assert(p_this_net->current_solve_cell < p_this_net->cell_count && p_this_net->current_solve_edge < EDGE_DIR_NUM);
+
+					/* Get a pointer to the cell we are currently looking at
+					 * within the current net and figure out what is going on
+					 * with the current edge we are interested in. */
+					cell_idx          = p_this_net->first_cell_stack_index + p_this_net->current_solve_cell;
+					p_cell            = (struct gridcell *)p_program->pp_stack[cell_idx];
+					edge_id           = p_this_net->current_solve_edge;
+					edge_type         = gridcell_get_edge_connection_type(p_cell, edge_id);
+
+					/* Here is as good a point as any to do the state update.
+					 * One thing that is important is that we cannot remove
+					 * the node at this point - that must happen on the next
+					 * iteration. Consider that we have just got the
+					 * information about the last edge of the last cell in the
+					 * net, if this edge is connected to the cell that forms
+					 * a loop, we need to be able to detect that. If we remove
+					 * the node from the list or clear the
+					 * b_currently_in_solve_stack field, it would appear that
+					 * there would be no loop in this instance. */
+					if (++p_this_net->current_solve_edge == EDGE_DIR_NUM) {
+						p_this_net->current_solve_edge = 0;
+						++p_this_net->current_solve_cell;
+					}
+
+					/* If the edge type is anything other than a receiving
+					 * mode, we don't care at all. If it is a net connection,
+					 * we're going to look at it eventually (or have already
+					 * looked at it). If it is a send connection, we don't
+					 * care for reasons earlier mentioned. If it is a receive
+					 * connection, it must be immediate - delayed signals we
+					 * do not care about. */
+					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVER) {
+						/* Get the neighbouring cell and work out if it is
+						 * an undelayed connection to this net. */
+						struct gridcell *p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_id, 0);
+						int neighbour_edge_type = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(edge_id));
+						if (neighbour_edge_type == EDGE_LAYER_CONNECTION_INVERTED) {
+							/* It is an undelayed connection. Because of all
+							 * the labelling we did earlier, the net_id of
+							 * the neighbour cell is actually the correct id
+							 * of the net which contains the it. Get access
+							 * to that net so we can figure out what to do. */
+							uint32_t connected_net_id = p_neighbour->data >> 32;
+							struct program_net *p_dep_net = &(p_program->p_nets[connected_net_id]);
+							if (p_dep_net->b_currently_in_solve_stack) {
+								/* If the net is already in the stack, we
+								 * have a loop. Walk back the stack until
+								 * we find the net marking each net as
+								 * existing within a cycle. We will do
+								 * something with this later. */
+								size_t j = stack_size;
+								do {
+									assert(j > 0);
+									p_program->pp_netstack[--j]->b_exists_in_cycle = 1;
+								} while (p_program->pp_netstack[j] != p_dep_net);
+								assert(p_program->pp_netstack[j] == p_dep_net);
+								num_broken_nets++;
+							} else if (p_dep_net->current_solve_cell != p_dep_net->cell_count) {
+								/* The net is not already in the stack and
+								 * has not been solved (the assert verifies
+								 * everything is as expected). We need to
+								 * put it on the top of the stack and start
+								 * the edge exploration processes on it. */
+								assert(p_dep_net->current_solve_cell == 0 && p_dep_net->current_solve_edge == 0);
+								p_program->pp_netstack[stack_size++] = p_dep_net;
+								p_dep_net->b_currently_in_solve_stack = 1;
+							} else {
+								/* The net is not on the stack and has
+								 * already been completely processed earlier.
+								 * We do not need to do anything :) yay */
+							}
+						} else {
+							/* The edge was labeled as a receiver, but it was
+							 * not EDGE_LAYER_CONNECTION_INVERTED - it had
+							 * better be EDGE_LAYER_CONNECTION_DELAY_INVERTED
+							 * because that is the only other type we know
+							 * about. */
+							assert(neighbour_edge_type == EDGE_LAYER_CONNECTION_DELAY_INVERTED);
+						}
+					}
+				}
+			}
+		}
+		assert(end_of_stack_pointer == 0);
+	}
+
+	/* At this point, if there are no broken nets, we could actually run the
+	 * program by evaluating the net stack backwards and examining the cells.
+	 * But now what we want to do is re-number our nets to be in order of
+	 * execution. We use the GRIDCELL_BIT_COMPUTING bit of every cell to
+	 * indicate if the cell is part of a loop. */
+	{
+		size_t i;
+		for (i = 0; i < p_program->net_count; i++) {
+			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
+			uint32_t j;
+			uint64_t new_id_mask = (((uint64_t)i) << 32) | ((p_net->b_exists_in_cycle) ? GRIDCELL_BIT_COMPUTING : 0);
+			for (j = 0; j < p_net->cell_count; j++) {
+				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
+				struct gridcell *p_cell = (struct gridcell *)p_program->pp_stack[cell_idx];
+				assert((p_cell->data >> 32) == p_net->net_id);
+				p_cell->data = (p_cell->data & ~GRIDCELL_COMPUTE_AND_ID_BITS) | new_id_mask;
 			}
 		}
 	}
 
+	{
+		size_t i;
+		printf("found %llu nets\n", (unsigned long long)p_program->net_count);
+		printf("  netid     cell address (x, y, layer)\n");
+		for (i = 0; i < p_program->net_count; i++) {
+			uint32_t j;
+			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
+			printf("  net %llu (id=%llu is broken=%d):\n", (unsigned long long)i, (unsigned long long)p_net->net_id, p_net->b_exists_in_cycle);
+			for (j = 0; j < p_net->cell_count; j++) {
+				struct gridaddr addr;
+				uint32_t cell_idx = p_net->first_cell_stack_index + j;
+				(void)gridcell_get_gridpage_and_full_addr((struct gridcell *)(p_program->pp_stack[cell_idx]), &addr);
+				printf
+					("    (%ld, %ld, %ld)\n"
+					,(long)addr.x - (long)0x40000000
+					,(long)addr.y - (long)0x40000000
+					,(long)addr.z
+					);
+
+			}
+		}
+	}
+
+	/* Early exit before we write our solver code. */
+	if (num_broken_nets) {
+		return num_broken_nets;
+	}
+
+	/* Fun time. */
 
 
 
 
 
 	return 0;
-}
-
-
-
-
-
-/* begin a new solution cycle. */
-static void start_new_compute(struct gridpage *p_gp) {
-	int i;
-
-	for (i = 0; i < 768; i++) {
-		uint32_t cell_data = p_gp->data[i].data;
-		
-		cell_data =
-			(cell_data & 0x87FFFFFF) |       /* <-- zero the COMPUTING/COMPUTED/VALUE/OLD_VALUE bits */
-			((cell_data << 1) & 0x40000000); /* <-- move the existing VALUE bit into the OLD_VALUE bit. */
-	}
-
-	for (i = 0; i < CELL_LOOKUP_NB; i++) {
-		if (p_gp->lookups[i] != NULL)
-			start_new_compute(p_gp->lookups[i]);
-	}
 }
 
 #define EDGE_NOTHING      (0)
@@ -956,10 +1197,6 @@ static void vmpy(float *p_x, float *p_y, float x2, float y2) {
 	float y1 = *p_y;
 	*p_x = x1 * x2 - y1 * y2;
 	*p_y = x1 * y2 + y1 * x2;
-}
-
-static float sqr(float x) {
-	return x*x;
 }
 
 static int get_next_connection_type(int old) {
@@ -1108,7 +1345,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 		}
 
 		if (g.IO.MouseDoubleClicked[0] && p_hc != NULL) {
-			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 0);
+			//struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 0);
 			
 #if 0
 			if (p_cell != NULL) {
@@ -1270,10 +1507,6 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			if (ox - radius > window_width)
 				break;
 
-			int edge_mode_n = EDGE_NOTHING;
-			int edge_mode_ne = EDGE_NOTHING;
-			int edge_mode_se = EDGE_NOTHING;
-
 			ImVec2 p;
 
 			p.x = vMin.x + ox;
@@ -1309,18 +1542,12 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			/* the radius of the circles on the inner edge - this number could be between k/2 (touching) and probably k/3 */
 			float r = k / 2.8f;
 
-
-			float north_y = p.y - 0.866f * edge_length;
-
 			ImVec2 inner_n1  = ImVec2(p.x - 0.5f * edge_length, p.y - 0.866f * edge_length);
 			ImVec2 inner_n2  = ImVec2(p.x + 0.5f * edge_length, p.y - 0.866f * edge_length);
 			ImVec2 inner_ne1 = ImVec2(p.x + 0.5f * edge_length, p.y - 0.866f * edge_length);
 			ImVec2 inner_ne2 = ImVec2(p.x + 1.0f * edge_length, p.y);
 			ImVec2 inner_se1 = ImVec2(p.x + 1.0f * edge_length, p.y);
 			ImVec2 inner_se2 = ImVec2(p.x + 0.5f * edge_length, p.y + 0.866f * edge_length);
-
-			ImU32 cjoined    = ImColor(0, 0, 0, 128);
-			ImU32 cunjoined  = ImColor(0, 0, 0, 32);
 			
 			/* Draw grid first. */
 			p_list->AddLine(inner_n1,  inner_n2,  ImColor(192, 192, 192, 256), 2 * edge_length / 40);
@@ -1382,10 +1609,10 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					for (j = 0; j < 3; j++) { /* for each layer of this edge... */
 						float xrc = mpxrc - (-k + j*k);
 						float yrc = mpyrc - (k - 0.866f * edge_length);
-						if  (   xrc > -k*0.5f
-						    &&  xrc < k*0.5f
+						if  (   xrc > -touching_radius
+						    &&  xrc < touching_radius
 						    &&  (   (yrc > -k && yrc < 0.0f) /* in the square between the inner and outer hexagon edges */
-						        ||  xrc*xrc + yrc*yrc < k*k*0.25f /* in the circular landing shape at the end of the hexagon */
+						        ||  xrc*xrc + yrc*yrc < touching_radius*touching_radius /* in the circular landing shape at the end of the hexagon */
 						        )
 						    &&  g.IO.MouseClicked[0]
 						    && !b_invalid_neighbour_addr
