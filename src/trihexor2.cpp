@@ -588,6 +588,23 @@ struct program_net {
 };
 
 struct program {
+	/* The program is made up of net_count blocks which define the value of that net.
+	 *
+	 * Each group consists of a count of how many sources exist. Followed by a pair
+	 * of words for each source. The first word is the mode and the second is a source
+	 * net. The modes are as follows:
+	 *   * 0: invert the value of the given net
+	 *   * 1: invert the value of the previous value of the given net
+	 * 
+	 * The supplied nets ids must be smaller than the currently active net for
+	 * modes which require immediate value. This forces sequencing of operation.
+	 * 
+	 * It is permissible for count values to be zero in which case the data is not
+	 * touched.
+	 * 
+	 * After the program has executed, the data buffer is copied into an old state
+	 * buffer and the new buffer is zeroed. The caller may initialise specific data
+	 * bits prior to execution to provide external input. */
 	uint32_t *p_code;
 	size_t    code_words;
 	size_t    alloc_code_words;
@@ -615,15 +632,6 @@ static void run_program(struct program *p_program) {
 	const uint32_t *p_code = p_program->p_code;
 	uint32_t command;
 
-	/* inst0 = end of program
-	 *
-	 * inst1 = solve_net
-	 *   data2 = number of ops
-	 *     subdata1 = 0=delayed inverted net, 1=inverted net,
-	 *     subdata2 = computed net index
-	 *   if data2=0 the net is on.
-	 *
-	 * */
 	while ((command = *p_code++) != 0) {
 		if (command == 1) {
 			uint32_t bit = *p_code++;
@@ -1030,6 +1038,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				assert((p_cell->data >> 32) == p_net->net_id);
 				p_cell->data = (p_cell->data & ~GRIDCELL_COMPUTE_AND_ID_BITS) | new_id_mask;
 			}
+			p_net->net_id = i;
 		}
 	}
 
@@ -1062,6 +1071,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	}
 
 	/* Fun time. */
+	
 
 
 
