@@ -279,85 +279,6 @@ struct gridstate {
 
 };
 
-
-#define U64MASKS(x_) \
-{x_((uint64_t)0x0000000000000001) \
-,x_((uint64_t)0x0000000000000002) \
-,x_((uint64_t)0x0000000000000004) \
-,x_((uint64_t)0x0000000000000008) \
-,x_((uint64_t)0x0000000000000010) \
-,x_((uint64_t)0x0000000000000020) \
-,x_((uint64_t)0x0000000000000040) \
-,x_((uint64_t)0x0000000000000080) \
-,x_((uint64_t)0x0000000000000100) \
-,x_((uint64_t)0x0000000000000200) \
-,x_((uint64_t)0x0000000000000400) \
-,x_((uint64_t)0x0000000000000800) \
-,x_((uint64_t)0x0000000000001000) \
-,x_((uint64_t)0x0000000000002000) \
-,x_((uint64_t)0x0000000000004000) \
-,x_((uint64_t)0x0000000000008000) \
-,x_((uint64_t)0x0000000000010000) \
-,x_((uint64_t)0x0000000000020000) \
-,x_((uint64_t)0x0000000000040000) \
-,x_((uint64_t)0x0000000000080000) \
-,x_((uint64_t)0x0000000000100000) \
-,x_((uint64_t)0x0000000000200000) \
-,x_((uint64_t)0x0000000000400000) \
-,x_((uint64_t)0x0000000000800000) \
-,x_((uint64_t)0x0000000001000000) \
-,x_((uint64_t)0x0000000002000000) \
-,x_((uint64_t)0x0000000004000000) \
-,x_((uint64_t)0x0000000008000000) \
-,x_((uint64_t)0x0000000010000000) \
-,x_((uint64_t)0x0000000020000000) \
-,x_((uint64_t)0x0000000040000000) \
-,x_((uint64_t)0x0000000080000000) \
-,x_((uint64_t)0x0000000100000000) \
-,x_((uint64_t)0x0000000200000000) \
-,x_((uint64_t)0x0000000400000000) \
-,x_((uint64_t)0x0000000800000000) \
-,x_((uint64_t)0x0000001000000000) \
-,x_((uint64_t)0x0000002000000000) \
-,x_((uint64_t)0x0000004000000000) \
-,x_((uint64_t)0x0000008000000000) \
-,x_((uint64_t)0x0000010000000000) \
-,x_((uint64_t)0x0000020000000000) \
-,x_((uint64_t)0x0000040000000000) \
-,x_((uint64_t)0x0000080000000000) \
-,x_((uint64_t)0x0000100000000000) \
-,x_((uint64_t)0x0000200000000000) \
-,x_((uint64_t)0x0000400000000000) \
-,x_((uint64_t)0x0000800000000000) \
-,x_((uint64_t)0x0001000000000000) \
-,x_((uint64_t)0x0002000000000000) \
-,x_((uint64_t)0x0004000000000000) \
-,x_((uint64_t)0x0008000000000000) \
-,x_((uint64_t)0x0010000000000000) \
-,x_((uint64_t)0x0020000000000000) \
-,x_((uint64_t)0x0040000000000000) \
-,x_((uint64_t)0x0080000000000000) \
-,x_((uint64_t)0x0100000000000000) \
-,x_((uint64_t)0x0200000000000000) \
-,x_((uint64_t)0x0400000000000000) \
-,x_((uint64_t)0x0800000000000000) \
-,x_((uint64_t)0x1000000000000000) \
-,x_((uint64_t)0x2000000000000000) \
-,x_((uint64_t)0x4000000000000000) \
-,x_((uint64_t)0x8000000000000000) \
-}
-
-#define NOTHING(x_) x_
-static uint64_t BIT_MASKS[] = U64MASKS(NOTHING);
-#undef NOTHING
-#define INVERT(x_) ~x_
-static uint64_t INV_BIT_MASKS[] = U64MASKS(INVERT);
-#undef INVERT
-
-
-
-
-
 void gridstate_init(struct gridstate *p_gridstate) {
 	p_gridstate->p_root = NULL;
 	p_gridstate->stats_ok = 0;
@@ -606,46 +527,139 @@ struct program {
 	 * buffer and the new buffer is zeroed. The caller may initialise specific data
 	 * bits prior to execution to provide external input. */
 	uint32_t *p_code;
-	size_t    code_words;
-	size_t    alloc_code_words;
-
-	/* bit compressed. */
-	size_t    bit_count;
-	uint32_t *p_data;
-	uint32_t *p_last_data;
-	size_t    alloc_data_count;
+	size_t    code_count;
+	size_t    code_alloc_count;
 
 	/* net list */
 	struct program_net **pp_netstack;
 	struct program_net  *p_nets;
+	uint64_t            *p_data;
+	uint64_t            *p_last_data;
 	size_t               net_alloc_count;
 	size_t               net_count;
 
 	/* stack */
-	void            **pp_stack;
-	size_t            stack_count;
-	size_t            stack_alloc_count;
+	void               **pp_stack;
+	size_t               stack_count;
+	size_t               stack_alloc_count;
 
 };
 
+/* Before running this, the caller can initialise any field input bits to
+ * 1 in the p_data pointer. p_data is zeroed after every execution so
+ * externally supplied bits must be written prior to calling run_program
+ * every time. Also, neither p_data nor p_last_data can be cached, their
+ * values will change after every call to run_program.
+ * 
+ * After running this, output data for each net is in p_last_data. */
 static void run_program(struct program *p_program) {
-	const uint32_t *p_code = p_program->p_code;
-	uint32_t command;
-
-	while ((command = *p_code++) != 0) {
-		if (command == 1) {
-			uint32_t bit = *p_code++;
-			p_program->p_data[bit >> 6] &= INV_BIT_MASKS[bit & 0x3F];
-		} else {
-			abort();
-		}
+#define U64MASKS(x_) \
+	{x_((uint64_t)0x0000000000000001) \
+	,x_((uint64_t)0x0000000000000002) \
+	,x_((uint64_t)0x0000000000000004) \
+	,x_((uint64_t)0x0000000000000008) \
+	,x_((uint64_t)0x0000000000000010) \
+	,x_((uint64_t)0x0000000000000020) \
+	,x_((uint64_t)0x0000000000000040) \
+	,x_((uint64_t)0x0000000000000080) \
+	,x_((uint64_t)0x0000000000000100) \
+	,x_((uint64_t)0x0000000000000200) \
+	,x_((uint64_t)0x0000000000000400) \
+	,x_((uint64_t)0x0000000000000800) \
+	,x_((uint64_t)0x0000000000001000) \
+	,x_((uint64_t)0x0000000000002000) \
+	,x_((uint64_t)0x0000000000004000) \
+	,x_((uint64_t)0x0000000000008000) \
+	,x_((uint64_t)0x0000000000010000) \
+	,x_((uint64_t)0x0000000000020000) \
+	,x_((uint64_t)0x0000000000040000) \
+	,x_((uint64_t)0x0000000000080000) \
+	,x_((uint64_t)0x0000000000100000) \
+	,x_((uint64_t)0x0000000000200000) \
+	,x_((uint64_t)0x0000000000400000) \
+	,x_((uint64_t)0x0000000000800000) \
+	,x_((uint64_t)0x0000000001000000) \
+	,x_((uint64_t)0x0000000002000000) \
+	,x_((uint64_t)0x0000000004000000) \
+	,x_((uint64_t)0x0000000008000000) \
+	,x_((uint64_t)0x0000000010000000) \
+	,x_((uint64_t)0x0000000020000000) \
+	,x_((uint64_t)0x0000000040000000) \
+	,x_((uint64_t)0x0000000080000000) \
+	,x_((uint64_t)0x0000000100000000) \
+	,x_((uint64_t)0x0000000200000000) \
+	,x_((uint64_t)0x0000000400000000) \
+	,x_((uint64_t)0x0000000800000000) \
+	,x_((uint64_t)0x0000001000000000) \
+	,x_((uint64_t)0x0000002000000000) \
+	,x_((uint64_t)0x0000004000000000) \
+	,x_((uint64_t)0x0000008000000000) \
+	,x_((uint64_t)0x0000010000000000) \
+	,x_((uint64_t)0x0000020000000000) \
+	,x_((uint64_t)0x0000040000000000) \
+	,x_((uint64_t)0x0000080000000000) \
+	,x_((uint64_t)0x0000100000000000) \
+	,x_((uint64_t)0x0000200000000000) \
+	,x_((uint64_t)0x0000400000000000) \
+	,x_((uint64_t)0x0000800000000000) \
+	,x_((uint64_t)0x0001000000000000) \
+	,x_((uint64_t)0x0002000000000000) \
+	,x_((uint64_t)0x0004000000000000) \
+	,x_((uint64_t)0x0008000000000000) \
+	,x_((uint64_t)0x0010000000000000) \
+	,x_((uint64_t)0x0020000000000000) \
+	,x_((uint64_t)0x0040000000000000) \
+	,x_((uint64_t)0x0080000000000000) \
+	,x_((uint64_t)0x0100000000000000) \
+	,x_((uint64_t)0x0200000000000000) \
+	,x_((uint64_t)0x0400000000000000) \
+	,x_((uint64_t)0x0800000000000000) \
+	,x_((uint64_t)0x1000000000000000) \
+	,x_((uint64_t)0x2000000000000000) \
+	,x_((uint64_t)0x4000000000000000) \
+	,x_((uint64_t)0x8000000000000000) \
 	}
 
+#define NOTHING(x_) x_
+	static uint64_t BIT_MASKS[] = U64MASKS(NOTHING);
+#undef NOTHING
+#if 0
+#define INVERT(x_) ~x_
+	static uint64_t INV_BIT_MASKS[] = U64MASKS(INVERT);
+#undef INVERT
+#endif
 
+	/* run the program. */
+	size_t    dest_net;
+	uint32_t *p_code = p_program->p_code;
+	for (dest_net = 0; dest_net < p_program->net_count; dest_net++) {
+		size_t    nb_sources = *p_code++;
+		uint64_t *p_dest     = &(p_program->p_data[dest_net >> 6]);
+		uint64_t  dest_bit   = BIT_MASKS[dest_net & 0x3F];
+		uint64_t  dest_val   = *p_dest;
+		while (/* early exit condition */ (dest_val & dest_bit) == 0 && nb_sources--) {
+			uint32_t  op         = *p_code++;
+			uint32_t  src_net    = *p_code++;
+			uint64_t *p_data_src = (op & 0x1) ? p_program->p_last_data : p_program->p_data;
+			uint64_t  src_data   = (assert((op & 0x1) != 0 || (src_net < dest_net)), p_data_src[src_net >> 6]);
+			uint64_t  src_val    = src_data; /* (op & 0x2) ? ~src_data : src_data; <<<<< MAYBE - DO WE WANT DIODES? */
+			uint64_t  src_ctl    = src_val & BIT_MASKS[src_net & 0x3F];
+			dest_val |= (src_ctl) ? 0 : dest_bit;
+			assert(op < 2);
+		}
+		*p_dest = dest_val;
+		p_code += 2*nb_sources;
+	}
 
+	/* pointer jiggle and state reset. */
+	{
+		uint64_t *p_old_data   = p_program->p_data;
+		p_program->p_data      = p_program->p_last_data;
+		p_program->p_last_data = p_old_data;
+	}
 
-
-
+	/* state reset. */
+	memset(p_program->p_data, 0, ((p_program->net_count + 63)/64)*sizeof(uint64_t));
 }
 
 
@@ -658,15 +672,13 @@ static void program_init(struct program *p_program) {
 	p_program->p_nets        = NULL;
 	p_program->pp_netstack   = NULL;
 
-	p_program->alloc_code_words  = 0;
-	p_program->alloc_data_count  = 0;
+	p_program->code_alloc_count  = 0;
 	p_program->stack_alloc_count = 0;
 	p_program->net_alloc_count   = 0;
-	p_program->net_count         = 0;
 
+	p_program->code_count  = 0;
 	p_program->stack_count = 0;
-	p_program->code_words  = 0;
-	p_program->bit_count   = 0;
+	p_program->net_count   = 0;
 
 }
 
@@ -676,16 +688,23 @@ program_net_push(struct program *p_program) {
 	if (p_program->net_count >= p_program->net_alloc_count) {
 		struct program_net *p_new_nets;
 		struct program_net **pp_new_netstack;
-		size_t newsz = ((p_program->net_alloc_count * 4) / 3) & ~(size_t)0xff;
+		uint64_t           *p_new_data;
+		size_t newsz      = ((p_program->net_count*4)/3) & ~(size_t)0xff;
+		size_t data_words;
 		if (newsz < 1024)
 			newsz = 1024;
-		if ((p_new_nets = (struct program_net *)realloc(p_program->p_nets, sizeof(struct program_net) * newsz)) == NULL)
+		data_words = (newsz + 63)/64;
+		if ((p_new_nets = (struct program_net *)realloc(p_program->p_nets, sizeof(struct program_net)*newsz)) == NULL)
 			abort();
-		if ((pp_new_netstack = (struct program_net **)realloc(p_program->pp_netstack, sizeof(struct program_net *) * newsz)) == NULL)
+		if ((pp_new_netstack = (struct program_net **)realloc(p_program->pp_netstack, sizeof(struct program_net *)*newsz)) == NULL)
+			abort();
+		if ((p_new_data = (uint64_t *)realloc(p_program->p_data, sizeof(uint64_t)*2*data_words)) == NULL)
 			abort();
 		p_program->net_alloc_count = newsz;
-		p_program->pp_netstack = pp_new_netstack;
-		p_program->p_nets = p_new_nets;
+		p_program->pp_netstack     = pp_new_netstack;
+		p_program->p_nets          = p_new_nets;
+		p_program->p_data          = p_new_data;
+		p_program->p_last_data     = &(p_new_data[data_words]);
 	}
 	return &(p_program->p_nets[p_program->net_count++]);
 }
@@ -702,6 +721,22 @@ static void program_stack_push(struct program *p_program, void *p_ptr) {
 		p_program->stack_alloc_count = newsz;
 	}
 	p_program->pp_stack[p_program->stack_count++] = p_ptr;
+}
+
+static uint32_t *program_code_reserve(struct program *p_program, size_t n) {
+	p_program->code_count += n;
+	if (p_program->code_count >= p_program->code_alloc_count) {
+		size_t    newsz = ((p_program->code_count * 4) / 3) & ~(size_t)0xff;
+		uint32_t *p_new_code;
+		if (newsz < 1024)
+			newsz = 1024;
+		if ((p_new_code = (uint32_t *)realloc(p_program->p_code, newsz*sizeof(uint32_t))) == NULL)
+			abort();
+		p_program->p_code           = p_new_code;
+		p_program->code_alloc_count = newsz;
+	}
+	return &(p_program->p_code[p_program->code_count - n]);
+
 }
 
 static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits) {
@@ -752,6 +787,7 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
 	}
 }
 
+#define PROGRAM_DEBUG (1)
 
 static int program_compile(struct program *p_program, struct gridstate *p_gridstate) {
 	size_t            num_grid_pages;
@@ -760,7 +796,8 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	int               num_broken_nets = 0;
 
 	p_program->stack_count = 0;
-	p_program->net_count = 0;
+	p_program->net_count   = 0;
+	p_program->code_count  = 0;
 
 	/* no nodes, no problems. */
 	if (p_gridstate->p_root == NULL)
@@ -779,8 +816,10 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			}
 		}
 	}
-	
+
+#if PROGRAM_DEBUG
 	printf("added %llu grid pages\n", (unsigned long long)num_grid_pages);
+#endif
 
 	/* 2) push all used grid-cells onto the list. set their net id to the
 	 * position in the list and clear the compute bit. */
@@ -803,7 +842,9 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		pp_list_base = (struct gridcell **)&(p_program->pp_stack[num_grid_pages]);
 	}
 
+#if PROGRAM_DEBUG
 	printf("added %llu cells\n", (unsigned long long)num_cells);
+#endif
 
 	/* 3) sort the list into groups sharing a common net. reassign the net
 	 * ids to be actual net ids. this will set all the compute bits. in this
@@ -1042,6 +1083,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		}
 	}
 
+#if PROGRAM_DEBUG
 	{
 		size_t i;
 		printf("found %llu nets\n", (unsigned long long)p_program->net_count);
@@ -1064,16 +1106,87 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			}
 		}
 	}
+#endif
 
 	/* Early exit before we write our solver code. */
 	if (num_broken_nets) {
 		return num_broken_nets;
 	}
 
-	/* Fun time. */
-	
+	/* Fun time - build the program. At this point, everything is totally
+	 * great. pp_netstack is reverse ordered by dependencies. We have no loops
+	 * we can just read the stack backwards, look at the cells and dump where
+	 * they get their data from. */
+	{
+		size_t    i;
+		for (i = 0; i < p_program->net_count; i++) {
+			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
+			uint32_t j;
+			uint32_t num_sources = 0;
+			uint32_t *p_code_start = program_code_reserve(p_program, 1);
+			assert(p_net->net_id == i);
+			for (j = 0; j < p_net->cell_count; j++) {
+				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
+				struct gridcell *p_cell = (struct gridcell *)p_program->pp_stack[cell_idx];
+				int k;
+				assert((p_cell->data >> 32) == i);
+				for (k = 0; k < EDGE_DIR_NUM; k++) {
+					if (gridcell_get_edge_connection_type(p_cell, k) == EDGE_LAYER_CONNECTION_RECEIVER) {
+						struct gridcell *p_neighbour         = gridcell_get_edge_neighbour(p_cell, k, 0);
+						int              neighbour_edge_type = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k));
+						uint32_t         neighbour_net       = p_neighbour->data >> 32;
+						uint32_t        *p_data              = program_code_reserve(p_program, 2);
+						if (neighbour_edge_type == EDGE_LAYER_CONNECTION_INVERTED) {
+							assert(neighbour_net < i);
+							p_data[0] = 0;
+							p_data[1] = neighbour_net;
+						} else {
+							assert(neighbour_edge_type == EDGE_LAYER_CONNECTION_DELAY_INVERTED);
+							assert(neighbour_net < p_program->net_count);
+							p_data[0] = 1;
+							p_data[1] = neighbour_net;
+						}
+						num_sources++;
+					}
+				}
+				*p_code_start = num_sources;
+			}
+		}
 
+		/* clear states ready for processing. */
+		memset(p_program->p_data, 0, sizeof(uint64_t) * ((p_program->net_count + 63)/64));
+		memset(p_program->p_last_data, 0, sizeof(uint64_t) * ((p_program->net_count + 63)/64));
+	}
 
+#if PROGRAM_DEBUG
+	{
+		size_t    i;
+		uint32_t *p_code = p_program->p_code;
+		printf("program stored in %llu words (%llu bytes)\n", (unsigned long long)p_program->code_count, ((unsigned long long)(p_program->code_count * 4)));
+		for (i = 0; i < p_program->net_count; i++) {
+			size_t nb_sources = *p_code++;
+			if (nb_sources == 0) {
+				printf("  net %llu has zero sources\n", (unsigned long long)i);
+			} else {
+				printf("  net %llu has %llu sources\n", (unsigned long long)i, (unsigned long long)nb_sources);
+				while (nb_sources--) {
+					uint32_t  op         = *p_code++;
+					uint32_t  src_net    = *p_code++;
+					const char *p_opname;
+					if (op == 0) {
+						assert(src_net < i);
+						p_opname = "         INVERT";
+					} else {
+						assert(src_net < p_program->net_count);
+						assert(op == 1);
+						p_opname = "INVERT PREVIOUS";
+					}
+					printf("    %s %llu\n", p_opname, (unsigned long long)src_net);
+				}
+			}
+		}
+	}
+#endif
 
 
 
@@ -2101,198 +2214,6 @@ int main(int argc, char **argv)
 
 
 #if 0
-
-static void mark_net_as_computing_mask(struct gridcell *p_cell) {
-	if ((p_cell->flags & CELLFLAG_IS_COMPUTING_MASK) == 0) {
-		unsigned i;
-		p_cell->flags |= CELLFLAG_IS_COMPUTING_MASK;
-		for (i = 0; i < VERTEX_DIR_NUM; i++) {
-			if ((p_cell->flags >> (26 + i)) & 1) {
-				mark_net_as_computing_mask(gridcell_get_vertex_neighbour(p_cell, i, 0));
-			}
-		}
-	}
-}
-
-
-static int grid_cell_solve(struct gridcell *p_cell, struct solve_stats *p_stats);
-
-static int solve_net_recursive(struct gridcell *p_cell, uint32_t *p_value, struct solve_stats *p_stats) {
-	unsigned i;
-	uint32_t value = p_cell->flags >> CELLFLAG_EXTERNAL_SUPPLY_BIT;
-
-	assert(p_cell->flags & CELLFLAG_IS_COMPUTING_MASK);
-
-	if (p_cell->flags & CELLFLAG_IS_COMPUTED_MASK)
-		return 0;
-
-	if (p_cell->flags & (0xFFFFFF00 | CELLFLAG_EXTERNAL_SUPPLY_MASK)) {
-		struct gridaddr addr;
-		(void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
-
-		int32_t x = (int32_t)addr.x;
-		int32_t y = (int32_t)addr.y;
-
-		if (p_stats->num_cells++ == 0) {
-			p_stats->max_x = x;
-			p_stats->max_y = y;
-			p_stats->min_x = x;
-			p_stats->min_y = y;
-		} else {
-			if (x < p_stats->min_x)
-				p_stats->min_x = x;
-			else if (x > p_stats->max_x)
-				p_stats->max_x = x;
-			if (y < p_stats->min_y)
-				p_stats->min_y = y;
-			else if (y > p_stats->max_y)
-				p_stats->max_y = y;
-		}
-	}
-
-	for (i = 0; i < EDGE_DIR_NUM; i++) {
-		int edge_flags = (p_cell->flags >> (8 + 3*i)) & 0x7;
-		struct gridcell *p_neighbour;
-		if (edge_flags == EDGE_TYPE_NOTHING || edge_flags == EDGE_TYPE_SENDER)
-			continue;
-		p_stats->num_edgeops++;
-		p_neighbour = gridcell_get_edge_neighbour(p_cell, i, 0);
-		assert(p_neighbour != NULL);
-		if (edge_flags == EDGE_TYPE_RECEIVER_DF)
-			value |= (p_neighbour->flags >> CELLFLAG_DELAY_VALUE_BIT);
-		else if (edge_flags == EDGE_TYPE_RECEIVER_DI) 
-			value |= (~p_neighbour->flags >> CELLFLAG_DELAY_VALUE_BIT);
-		else {
-			if (grid_cell_solve(p_neighbour, p_stats))
-				return 1;
-			if (edge_flags == EDGE_TYPE_RECEIVER_F)
-				value |= (p_neighbour->flags >> CELLFLAG_CURRENT_VALUE_BIT);
-			else
-				value |= (~p_neighbour->flags >> CELLFLAG_CURRENT_VALUE_BIT);
-		}
-	}
-
-	p_cell->flags |= CELLFLAG_IS_COMPUTED_MASK;
-
-	for (i = 0; i < VERTEX_DIR_NUM; i++) {
-		if ((p_cell->flags >> (26 + i)) & 1) {
-			if (i < 3)
-				p_stats->num_vertops++;
-			if (solve_net_recursive(gridcell_get_vertex_neighbour(p_cell, i, 0), &value, p_stats))
-				return 1;
-		}
-	}
-
-	if (value)
-		*p_value |= value;
-
-	return 0;
-}
-
-
-static void propagate_solution(struct gridcell *p_cell, uint64_t value_bit) {
-	int i;
-
-	assert(p_cell->flags & CELLFLAG_IS_COMPUTED_MASK);
-
-	if ((p_cell->flags & CELLFLAG_IS_COMPUTING_MASK) == 0)
-		return;
-
-	p_cell->flags = (p_cell->flags & ~(CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_CURRENT_VALUE_MASK)) | value_bit;
-
-	for (i = 0; i < VERTEX_DIR_NUM; i++) {
-		if ((p_cell->flags >> (26 + i)) & 1)
-			propagate_solution(gridcell_get_vertex_neighbour(p_cell, i, 0), value_bit);
-	}
-}
-
-static int grid_cell_solve(struct gridcell *p_cell, struct solve_stats *p_stats) {
-	unsigned i;
-	uint32_t netval;
-
-	/* The computing mask bit is set - there is a loop */
-	if (p_cell->flags & CELLFLAG_IS_COMPUTING_MASK)
-		return 1;
-
-	/* Already computed - nothing to do */
-	if (p_cell->flags & CELLFLAG_IS_COMPUTED_MASK)
-		return 0;
-
-	/* Mark all cells in this net as being computed. */
-	mark_net_as_computing_mask(p_cell);
-
-	/* Solve the net */
-	netval = 0;
-	if (solve_net_recursive(p_cell, &netval, p_stats))
-		return 1;
-
-	/* Clear the flag, set the shared value */
-	propagate_solution(p_cell, (((uint64_t)netval) & 1) << CELLFLAG_CURRENT_VALUE_BIT);
-
-	return 0;
-}
-
-int grid_solve_recursive(struct gridpage *p_root, struct solve_stats *p_stats) {
-	int ret = 0;
-	int i;
-	if (p_root == NULL)
-		return 0;
-	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
-		if ((p_root->data[i].flags & (CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_IS_COMPUTED_MASK)) == 0)
-			ret |= grid_cell_solve(&(p_root->data[i]), p_stats);
-	}
-	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		ret |= grid_solve_recursive(p_root->lookups[i], p_stats);
-	return ret;
-}
-
-
-static void grid_reset_compute_flags(struct gridpage *p_root) {
-	int i;
-	if (p_root == NULL)
-		return;
-	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++)
-		p_root->data[i].flags &= ~(uint64_t)(CELLFLAG_IS_COMPUTING_MASK | CELLFLAG_IS_COMPUTED_MASK);
-	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		grid_reset_compute_flags(p_root->lookups[i]);
-}
-
-static void update_delay_states(struct gridpage *p_root) {
-	int i;
-	if (p_root == NULL)
-		return;
-	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
-		uint64_t old_flags = p_root->data[i].flags;
-		uint64_t delay_data = ((old_flags >> CELLFLAG_CURRENT_VALUE_BIT) & 1) << CELLFLAG_DELAY_VALUE_BIT;
-		p_root->data[i].flags = (old_flags & ~(uint64_t)CELLFLAG_DELAY_VALUE_MASK) | delay_data;
-	}
-	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		update_delay_states(p_root->lookups[i]);
-}
-
-int grid_solve(struct gridstate *p_gs) {
-	int errors;
-	/* Clear the computed and is computing bits of all cells */
-	grid_reset_compute_flags(p_gs->p_root);
-	/* Recursively solve */
-	p_gs->stats.max_x = 0;
-	p_gs->stats.max_y = 0;
-	p_gs->stats.min_x = 0;
-	p_gs->stats.min_y = 0;
-	p_gs->stats.num_edgeops = 0;
-	p_gs->stats.num_vertops = 0;
-	p_gs->stats.num_cells   = 0;
-	p_gs->stats_ok = 0;
-	errors = grid_solve_recursive(p_gs->p_root, &(p_gs->stats));
-	/* Update delay states */
-	if (!errors) {
-		update_delay_states(p_gs->p_root);
-		p_gs->stats_ok = 1;
-	}
-	return errors;
-};
-
-#define STORAGE_FLAG_MASK (CELLFLAG_EXTERNAL_SUPPLY_MASK | 0xFFFFFF00)
 
 static int grid_save_rec(FILE *p_f, struct gridpage *p_page) {
 	int i;
