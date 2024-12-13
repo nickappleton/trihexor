@@ -87,11 +87,11 @@ static int get_opposing_edge_id(int dir) {
 
 #define NUM_LAYERS (3)
 
-#define EDGE_LAYER_CONNECTION_UNCONNECTED    (0) /* 000 */
-#define EDGE_LAYER_CONNECTION_RECEIVER       (1) /* 001 */
-#define EDGE_LAYER_CONNECTION_DELAY_INVERTED (2) /* 010 */
-#define EDGE_LAYER_CONNECTION_INVERTED       (3) /* 011 */
-#define EDGE_LAYER_CONNECTION_NET_CONNECTED  (4) /* 100 */
+#define EDGE_LAYER_CONNECTION_UNCONNECTED             (0) /* 000 */
+#define EDGE_LAYER_CONNECTION_SENDS                   (1) /* 001 */
+#define EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED (2) /* 010 */
+#define EDGE_LAYER_CONNECTION_RECEIVES_INVERTED       (3) /* 011 */
+#define EDGE_LAYER_CONNECTION_NET_CONNECTED           (4) /* 100 */
 
 #define GRIDCELL_BIT_MERGED_LAYERS   (0x0000000010000000ull)
 #define GRIDCELL_BIT_FORCE_NET       (0x0000000020000000ull)
@@ -99,15 +99,6 @@ static int get_opposing_edge_id(int dir) {
 #define GRIDCELL_BIT_BUSTED          (GRIDCELL_BIT_COMPUTING)
 #define GRIDCELL_NET_ID_BITS         (0xFFFFFFFF00000000ull)
 #define GRIDCELL_COMPUTE_AND_ID_BITS (GRIDCELL_BIT_COMPUTING|GRIDCELL_NET_ID_BITS)
-
-/* tests if any of the edges are tagged as EDGE_LAYER_CONNECTION_DELAY_INVERTED or EDGE_LAYER_CONNECTION_INVERTED */
-#define CELL_SUPPLIES_OTHERS(data_)          (((data_) & 0x4924800) != 0)
-
-/* tests if any of the edges are tagged as EDGE_LAYER_CONNECTION_NET_CONNECTED or if the MERGED_LAYERS bit is set */
-#define CELL_PART_OF_LARGER_NET(data_)       (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | 0x9249000)) != 0)
-
-/* tests if any of the edges are tagged as EDGE_LAYER_CONNECTION_RECEIVER */
-#define CELL_RECEIVES_FROM_OTHERS(data_)     (((data_) & ~((data_) >> 1) & 0x2492400) != 0)
 
 /* tests if any cell edges are not disconnected, the layers are merged or the FORCE_NET bit is set. */
 #define CELL_DESERVES_A_NET(data_)           (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_BIT_FORCE_NET | 0xFFFFC00)) != 0)
@@ -394,21 +385,21 @@ static struct gridcell *gridcell_get_edge_neighbour(struct gridcell *p_cell, int
 	return gridpage_get_gridcell(p_cell_page, &neighbour_addr, permit_create);
 }
 
-static int gridcell_set_edge_connection_type(struct gridcell *p_gc, int edge_id, int ctype) {
+static int gridcell_set_neighbour_edge_connection_type(struct gridcell *p_gc, int edge_id, int connection_type) {
 	struct gridcell *p_neighbour = gridcell_get_edge_neighbour(p_gc, edge_id, 1);
 	if (p_neighbour != NULL) {
-		uint64_t nval;
+		uint64_t cval;
 		uint64_t mask = 0x7;
-		uint64_t cval = ctype;
+		uint64_t nval = connection_type;
 		int      csft = 10 + edge_id*3;
 		int      nsft = 10 + get_opposing_edge_id(edge_id)*3;
 
-		if (ctype == EDGE_LAYER_CONNECTION_UNCONNECTED || ctype == EDGE_LAYER_CONNECTION_NET_CONNECTED)
-			nval = ctype;
-		else if (ctype == EDGE_LAYER_CONNECTION_INVERTED || ctype == EDGE_LAYER_CONNECTION_DELAY_INVERTED)
-			nval = EDGE_LAYER_CONNECTION_RECEIVER;
-		else
-			abort();
+		if (connection_type == EDGE_LAYER_CONNECTION_UNCONNECTED || connection_type == EDGE_LAYER_CONNECTION_NET_CONNECTED) {
+			cval = connection_type;
+		} else {
+			assert(connection_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED || connection_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED);
+			cval = EDGE_LAYER_CONNECTION_SENDS;
+		}
 
 		p_gc->data        = (p_gc->data & ~(mask << csft)) | (cval << csft);
 		p_neighbour->data = (p_neighbour->data & ~(mask << nsft)) | (nval << nsft);
@@ -419,11 +410,17 @@ static int gridcell_set_edge_connection_type(struct gridcell *p_gc, int edge_id,
 
 static int gridcell_get_edge_connection_type(const struct gridcell *p_gc, int edge_id) {
 	unsigned edge_props;
-	assert(edge_id < 6);
+	assert(edge_id < EDGE_DIR_NUM);
 	edge_props       = (p_gc->data >> (10 + 3*edge_id)) & 0x7;
 	return URANGE_CHECK(edge_props, 4);
 }
 
+static int gridcell_get_neighbour_edge_connection_type(struct gridcell *p_gc, int edge_id) {
+	struct gridcell *p_neighbour = gridcell_get_edge_neighbour(p_gc, edge_id, 0);
+	if (p_neighbour == NULL)
+		return EDGE_LAYER_CONNECTION_UNCONNECTED;
+	return gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(edge_id));
+}
 
 static int gridcell_are_layers_fused_get(const struct gridcell *p_gc) {
 	return (p_gc->data & GRIDCELL_BIT_MERGED_LAYERS) != 0;
@@ -974,60 +971,50 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 						++p_this_net->current_solve_cell;
 					}
 
-					/* If the edge type is anything other than a receiving
-					 * mode, we don't care at all. If it is a net connection,
-					 * we're going to look at it eventually (or have already
-					 * looked at it). If it is a send connection, we don't
-					 * care for reasons earlier mentioned. If it is a receive
-					 * connection, it must be immediate - delayed signals we
-					 * do not care about. */
-					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVER) {
-						/* Get the neighbouring cell and work out if it is
-						 * an undelayed connection to this net. */
-						struct gridcell *p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_id, 0);
-						int neighbour_edge_type = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(edge_id));
-						if (neighbour_edge_type == EDGE_LAYER_CONNECTION_INVERTED) {
-							/* It is an undelayed connection. Because of all
-							 * the labelling we did earlier, the net_id of
-							 * the neighbour cell is actually the correct id
-							 * of the net which contains the it. Get access
-							 * to that net so we can figure out what to do. */
-							uint32_t connected_net_id = p_neighbour->data >> 32;
-							struct program_net *p_dep_net = &(p_program->p_nets[connected_net_id]);
-							if (p_dep_net->b_currently_in_solve_stack) {
-								/* If the net is already in the stack, we
-								 * have a loop. Walk back the stack until
-								 * we find the net marking each net as
-								 * existing within a cycle. We will do
-								 * something with this later. */
-								size_t j = stack_size;
-								do {
-									assert(j > 0);
-									p_program->pp_netstack[--j]->b_exists_in_cycle = 1;
-								} while (p_program->pp_netstack[j] != p_dep_net);
-								assert(p_program->pp_netstack[j] == p_dep_net);
-								num_broken_nets++;
-							} else if (p_dep_net->current_solve_cell != p_dep_net->cell_count) {
-								/* The net is not already in the stack and
-								 * has not been solved (the assert verifies
-								 * everything is as expected). We need to
-								 * put it on the top of the stack and start
-								 * the edge exploration processes on it. */
-								assert(p_dep_net->current_solve_cell == 0 && p_dep_net->current_solve_edge == 0);
-								p_program->pp_netstack[stack_size++] = p_dep_net;
-								p_dep_net->b_currently_in_solve_stack = 1;
-							} else {
-								/* The net is not on the stack and has
-								 * already been completely processed earlier.
-								 * We do not need to do anything :) yay */
-							}
+					/* If the edge type is anything other than an undelayed,
+					 * receiving mode, we don't need to do anything at all.
+					 * If it is a net connection, we're going to look at it
+					 * eventually (or have already looked at it). If it is a
+					 * send connection, we don't care for reasons earlier
+					 * mentioned. */
+					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+						/* Get the neighbouring cell and its net. */
+						struct gridcell    *p_neighbour     = gridcell_get_edge_neighbour(p_cell, edge_id, 0);
+						struct program_net *p_neighbour_net = &(p_program->p_nets[p_neighbour->data >> 32]);
+
+						/* The neighbour must exist if the edge type to it
+						 * was connected. */
+						assert(p_neighbour != NULL);
+
+						/* The connection type should be send (as our cell
+						 * said the edge was a receiver). */
+						assert(gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(edge_id)) == EDGE_LAYER_CONNECTION_SENDS);
+
+						if (p_neighbour_net->b_currently_in_solve_stack) {
+							/* If the net is already in the stack, we have a
+							 * loop. Walk back the stack until we find it
+							 * marking each net as existing within a cycle. We
+							 * will do something with this later. */
+							size_t j = stack_size;
+							do {
+								assert(j > 0);
+								p_program->pp_netstack[--j]->b_exists_in_cycle = 1;
+							} while (p_program->pp_netstack[j] != p_neighbour_net);
+							assert(p_program->pp_netstack[j] == p_neighbour_net);
+							num_broken_nets++;
+						} else if (p_neighbour_net->current_solve_cell != p_neighbour_net->cell_count) {
+							/* The net is not already in the stack and has not
+							 * been solved (the assert verifies everything is
+							 * as expected). We need to put it on the top of
+							 * the stack and start the edge exploration
+							 * processes on it. */
+							assert(p_neighbour_net->current_solve_cell == 0 && p_neighbour_net->current_solve_edge == 0);
+							p_program->pp_netstack[stack_size++] = p_neighbour_net;
+							p_neighbour_net->b_currently_in_solve_stack = 1;
 						} else {
-							/* The edge was labeled as a receiver, but it was
-							 * not EDGE_LAYER_CONNECTION_INVERTED - it had
-							 * better be EDGE_LAYER_CONNECTION_DELAY_INVERTED
-							 * because that is the only other type we know
-							 * about. */
-							assert(neighbour_edge_type == EDGE_LAYER_CONNECTION_DELAY_INVERTED);
+							/* The net is not on the stack but has already
+							 * been completely processed earlier. We do not
+							 * need to do anything :) yay */
 						}
 					}
 				}
@@ -1039,8 +1026,8 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	/* At this point, if there are no broken nets, we could actually run the
 	 * program by evaluating the net stack backwards and examining the cells.
 	 * But now what we want to do is re-number our nets to be in order of
-	 * execution. We use the GRIDCELL_BIT_BUSTED bit of every cell to
-	 * indicate if the cell is part of a loop. */
+	 * execution. We use the GRIDCELL_BIT_BUSTED bit of every cell to indicate
+	 * if the cell is part of a loop. */
 	{
 		size_t i;
 		for (i = 0; i < p_program->net_count; i++) {
@@ -1105,17 +1092,18 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				int k;
 				assert((p_cell->data >> 32) == i);
 				for (k = 0; k < EDGE_DIR_NUM; k++) {
-					if (gridcell_get_edge_connection_type(p_cell, k) == EDGE_LAYER_CONNECTION_RECEIVER) {
+					int edge_type = gridcell_get_edge_connection_type(p_cell, k);
+					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED || edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 						struct gridcell *p_neighbour         = gridcell_get_edge_neighbour(p_cell, k, 0);
-						int              neighbour_edge_type = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k));
 						uint32_t         neighbour_net       = p_neighbour->data >> 32;
 						uint32_t        *p_data              = program_code_reserve(p_program, 2);
-						if (neighbour_edge_type == EDGE_LAYER_CONNECTION_INVERTED) {
+						assert(gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k)) == EDGE_LAYER_CONNECTION_SENDS);
+						if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 							assert(neighbour_net < i);
 							p_data[0] = 0;
 							p_data[1] = neighbour_net;
 						} else {
-							assert(neighbour_edge_type == EDGE_LAYER_CONNECTION_DELAY_INVERTED);
+							assert(edge_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED);
 							assert(neighbour_net < p_program->net_count);
 							p_data[0] = 1;
 							p_data[1] = neighbour_net;
@@ -1296,15 +1284,15 @@ static void vmpy(float *p_x, float *p_y, float x2, float y2) {
 
 static int get_next_connection_type(int old) {
 	switch (old) {
-	case EDGE_LAYER_CONNECTION_INVERTED:
-		return EDGE_LAYER_CONNECTION_DELAY_INVERTED;
-	case EDGE_LAYER_CONNECTION_DELAY_INVERTED:
+	case EDGE_LAYER_CONNECTION_RECEIVES_INVERTED:
+		return EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED;
+	case EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED:
 		return EDGE_LAYER_CONNECTION_NET_CONNECTED;
 	case EDGE_LAYER_CONNECTION_NET_CONNECTED:
 		return EDGE_LAYER_CONNECTION_UNCONNECTED;
 	default:
-		assert(old == EDGE_LAYER_CONNECTION_UNCONNECTED || old == EDGE_LAYER_CONNECTION_RECEIVER);
-		return EDGE_LAYER_CONNECTION_INVERTED;
+		assert(old == EDGE_LAYER_CONNECTION_UNCONNECTED || old == EDGE_LAYER_CONNECTION_SENDS);
+		return EDGE_LAYER_CONNECTION_RECEIVES_INVERTED;
 	}
 }
 
@@ -1710,7 +1698,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 							struct gridcell *p_cell;
 							cell_addr.z      = j;
 							if ((p_cell = gridstate_get_gridcell(p_st, &cell_addr, 1)) != NULL) {
-								if (!gridcell_set_edge_connection_type(p_cell, i, get_next_connection_type(gridcell_get_edge_connection_type(p_cell, i))))
+								if (!gridcell_set_neighbour_edge_connection_type(p_cell, i, get_next_connection_type(gridcell_get_neighbour_edge_connection_type(p_cell, i))))
 									program_compile(p_prog, p_st);
 							}
 						}
@@ -1732,7 +1720,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 							int edge_id = get_opposing_edge_id(i);
 							neighbour_addr.z = j;
 							if ((p_neighbour = gridstate_get_gridcell(p_st, &neighbour_addr, 1)) != NULL) {
-								if (!gridcell_set_edge_connection_type(p_neighbour, edge_id, get_next_connection_type(gridcell_get_edge_connection_type(p_neighbour, edge_id))))
+								if (!gridcell_set_neighbour_edge_connection_type(p_neighbour, edge_id, get_next_connection_type(gridcell_get_neighbour_edge_connection_type(p_neighbour, edge_id))))
 									program_compile(p_prog, p_st);
 							}
 						}
@@ -1787,21 +1775,21 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
 									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
 									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ctype == EDGE_LAYER_CONNECTION_DELAY_INVERTED) {
-									assert(ntype == EDGE_LAYER_CONNECTION_RECEIVER);
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ctype == EDGE_LAYER_CONNECTION_INVERTED) {
-									assert(ntype == EDGE_LAYER_CONNECTION_RECEIVER);
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ntype == EDGE_LAYER_CONNECTION_DELAY_INVERTED) {
-									assert(ctype == EDGE_LAYER_CONNECTION_RECEIVER);
+								} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
+									assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
 									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
 									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ntype == EDGE_LAYER_CONNECTION_INVERTED) {
-									assert(ctype == EDGE_LAYER_CONNECTION_RECEIVER);
+								} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+									assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
 									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
+									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
+								} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
+									assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
+									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
+									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
+								} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+									assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
+									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
 									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
 								} else {
 									assert(ntype == EDGE_LAYER_CONNECTION_UNCONNECTED);
