@@ -107,8 +107,11 @@ static int get_opposing_edge_id(int dir) {
 #define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT)
 
 
-/* tests if any cell edges are not disconnected, the layers are merged or the FORCE_NET bit is set. */
-#define CELL_DESERVES_A_NET(data_)           (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_BIT_FORCE_NET | 0xFFFFC00)) != 0)
+/* tests if any cell edges are not disconnected, the layers are merged or the
+ * FORCE_NET bit is set. if this is set, the cell is guaranteed to have a net
+ * assigned to it. If it is not set, the cell definitely will not have a net
+ * assigned to it. */
+#define CELL_WILL_GET_A_NET(data_)   (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_BIT_FORCE_NET | 0xFFFFC00)) != 0)
 
 
 /* How the grid is layed out:
@@ -508,14 +511,7 @@ struct program {
 
 };
 
-/* Before running this, the caller can initialise any field input bits to
- * 1 in the p_data pointer. p_data is zeroed after every execution so
- * externally supplied bits must be written prior to calling program_run
- * every time. Also, neither p_data nor p_last_data can be cached, their
- * values will change after every call to program_run.
- * 
- * After running this, output data for each net is in p_last_data. */
-static void program_run(struct program *p_program) {
+
 #define U64MASKS(x_) \
 	{x_((uint64_t)0x0000000000000001) \
 	,x_((uint64_t)0x0000000000000002) \
@@ -584,24 +580,34 @@ static void program_run(struct program *p_program) {
 	}
 
 #define NOTHING(x_) x_
-	static uint64_t BIT_MASKS[] = U64MASKS(NOTHING);
+static uint64_t BIT_MASKS[] = U64MASKS(NOTHING);
 #undef NOTHING
 #if 0
 #define INVERT(x_) ~x_
-	static uint64_t INV_BIT_MASKS[] = U64MASKS(INVERT);
+static uint64_t INV_BIT_MASKS[] = U64MASKS(INVERT);
 #undef INVERT
 #endif
 
+/* Before running this, the caller can initialise any field input bits to
+ * 1 in the p_data pointer. p_data is zeroed after every execution so
+ * externally supplied bits must be written prior to calling program_run
+ * every time. Also, neither p_data nor p_last_data can be cached, their
+ * values will change after every call to program_run.
+ * 
+ * After running this, output data for each net is in p_last_data. */
+static void program_run(struct program *p_program) {
 	/* run the program. */
 	size_t    dest_net;
 	uint32_t *p_code = p_program->p_code;
 	for (dest_net = 0; dest_net < p_program->net_count; dest_net++) {
 		size_t    nb_sources = *p_code++;
+		uint32_t *p_sources  = p_code;
 		uint64_t *p_dest     = &(p_program->p_data[dest_net >> 6]);
 		uint64_t  dest_bit   = BIT_MASKS[dest_net & 0x3F];
 		uint64_t  dest_val   = *p_dest;
+		p_code += nb_sources;
 		while (/* early exit condition */ (dest_val & dest_bit) == 0 && nb_sources--) {
-			uint32_t  word       = *p_code++;
+			uint32_t  word       = *p_sources++;
 			uint32_t  src_net    = word & 0xFFFFFF;
 			uint64_t *p_data_src = (word & 0x1000000) ? p_program->p_last_data : p_program->p_data;
 			uint64_t  src_data   = (assert((word & 0x1000000) != 0 || (src_net < dest_net)), p_data_src[src_net >> 6]);
@@ -611,7 +617,6 @@ static void program_run(struct program *p_program) {
 			assert((word >> 24) < 2);
 		}
 		*p_dest = dest_val;
-		p_code += nb_sources;
 	}
 
 	/* pointer jiggle and state reset. */
@@ -808,7 +813,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			struct gridpage *p_gp = (struct gridpage *)p_program->pp_stack[i];
 			int j;
 			for (j = 0; j < PAGE_XY_NB*PAGE_XY_NB*NUM_LAYERS; j++) {
-				if (!CELL_DESERVES_A_NET(p_gp->data[j].data))
+				if (!CELL_WILL_GET_A_NET(p_gp->data[j].data))
 					continue;
 				/* Clear all upper bits related to program development and
 				 * then set the net ID to be the index of the cell in the
@@ -1131,7 +1136,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	}
 
 #if PROGRAM_DEBUG
-	0
+	{
 		size_t    i;
 		uint32_t *p_code = p_program->p_code;
 		printf("program stored in %llu words (%llu bytes)\n", (unsigned long long)p_program->code_count, ((unsigned long long)(p_program->code_count*4)));
@@ -1425,8 +1430,6 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 		p_hc = &hc;
 	}
-
-
 
 
 	if (hovered) {
@@ -1839,6 +1842,10 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 			}
 
+			if (program_is_valid(p_prog)) {
+				program_run(p_prog);
+			}
+
 
 #if 0
 			/* pointing upwards */
@@ -1864,8 +1871,29 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			if (p_cell != NULL) {
 				if (gridcell_are_layers_fused_get(p_cell)) {
 					p_list->AddCircleFilled(p, radius*0.25, ImColor(128, 128, 128, 255), 17);
-
 				}
+
+				if (program_is_valid(p_prog)) {
+					int i;
+					for (i = 0; i < 3; i++) {
+						if (CELL_WILL_GET_A_NET(p_cell->data)) {
+							uint32_t net_id = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell->data);
+							int b_active    = (p_prog->p_last_data[net_id>>6] & BIT_MASKS[net_id & 0x3F]) != 0;
+							ImU32 layer_colour = ImColor
+								(((i == 0) ? 224-32*b_active : 196-96*b_active)
+								,((i == 1) ? 224-32*b_active : 196-96*b_active)
+								,((i == 2) ? 224-32*b_active : 196-96*b_active)
+								,255
+								);
+							float px = p.x - sinf(i*(float)(2*M_PI/3))*radius*0.2;
+							float py = p.y - cosf(i*(float)(2*M_PI/3))*radius*0.2;
+							p_list->AddCircleFilled(ImVec2(px, py), radius*0.07, layer_colour, 17);
+						}
+						p_cell += 256;
+					}
+				}
+
+
 
 			}
 
@@ -1874,23 +1902,6 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, -0.433f, radius);
 			draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, +0.433f, radius);
 #endif
-
-#if 0
-			if (cell_x == 0 && cell_y == 0)
-				p_list->AddCircle(p, radius*0.5, ImColor(192, 0, 0, 255), 17, 2.0f*radius/40);
-#endif
-
-#if 0
-			if (p_cell != NULL) {
-				if (p_cell->flags & CELLFLAG_IS_COMPUTING_MASK)
-					p_list->AddCircleFilled(p, radius*0.5, ImColor(255, 0, 128, 255), 17);
-				else if (p_cell->flags & CELLFLAG_CURRENT_VALUE_MASK)
-					p_list->AddCircleFilled(p, radius*0.1, ImColor(0, 255, 0, 255), 17);
-
-			}
-#endif
-
-
 
 			cell_x += 1;
 		} while (1);
