@@ -595,36 +595,41 @@ static uint64_t INV_BIT_MASKS[] = U64MASKS(INVERT);
  * values will change after every call to program_run.
  * 
  * After running this, output data for each net is in p_last_data. */
-static void program_run(struct program *p_program) {
+void program_run(struct program *p_program) {
 	/* run the program. */
+	uint32_t *p_code     = p_program->p_code;
+	uint64_t *p_data     = p_program->p_data;
+	uint64_t *p_old_data = p_program->p_last_data;
+	size_t    net_count  = p_program->net_count;
 	size_t    dest_net;
-	uint32_t *p_code = p_program->p_code;
-	for (dest_net = 0; dest_net < p_program->net_count; dest_net++) {
-		size_t    nb_sources = *p_code++;
-		uint32_t *p_sources  = p_code;
-		uint64_t *p_dest     = &(p_program->p_data[dest_net >> 6]);
-		uint64_t  dest_bit   = BIT_MASKS[dest_net & 0x3F];
-		uint64_t  dest_val   = *p_dest;
-		p_code += nb_sources;
-		while (/* early exit condition */ (dest_val & dest_bit) == 0 && nb_sources--) {
-			uint32_t  word       = *p_sources++;
+
+	for (dest_net = 0; dest_net < net_count; dest_net++) {
+		size_t    nb_sources   = *p_code++;
+		uint64_t *p_dest       = &(p_data[dest_net >> 6]);
+		uint64_t  dest_val     = *p_dest;
+		uint64_t  dest_val_set = dest_val | (1ull << (dest_net & 0x3F));
+
+		dest_val_set = (nb_sources) ? dest_val_set : dest_val; /* ensure no further reads if there are zero sources */
+
+		while (dest_val != dest_val_set) {
+			uint32_t  word       = *p_code++;
 			uint32_t  src_net    = word & 0xFFFFFF;
-			uint64_t *p_data_src = (word & 0x1000000) ? p_program->p_last_data : p_program->p_data;
+			uint64_t *p_data_src = (word & 0x1000000) ? p_old_data : p_data;
 			uint64_t  src_data   = (assert((word & 0x1000000) != 0 || (src_net < dest_net)), p_data_src[src_net >> 6]);
 			uint64_t  src_val    = src_data; /* (word & 0x2000000) ? ~src_data : src_data; <<<<< MAYBE - DO WE WANT DIODES? */
-			uint64_t  src_ctl    = src_val & BIT_MASKS[src_net & 0x3F];
-			dest_val |= (src_ctl) ? 0 : dest_bit;
+			uint64_t  src_ctl    = src_val & (1ull << (src_net & 0x3F)); // & BIT_MASKS[src_net & 0x3F];
+			dest_val     = (src_ctl) ? dest_val : dest_val_set; /* set the bit if the conditions have been met */
+			dest_val_set = (--nb_sources) ? dest_val_set : dest_val; /* ensure termination */
 			assert((word >> 24) < 2);
 		}
+
+		p_code += nb_sources;
 		*p_dest = dest_val;
 	}
 
 	/* pointer jiggle and state reset. */
-	{
-		uint64_t *p_old_data   = p_program->p_data;
-		p_program->p_data      = p_program->p_last_data;
-		p_program->p_last_data = p_old_data;
-	}
+	p_program->p_data      = p_old_data;
+	p_program->p_last_data = p_data;
 
 	/* state reset. */
 	memset(p_program->p_data, 0, ((p_program->net_count + 63)/64)*sizeof(uint64_t));
