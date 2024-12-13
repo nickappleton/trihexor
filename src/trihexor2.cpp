@@ -282,14 +282,14 @@ static uint64_t gridaddr_to_id(const struct gridaddr *p_addr) {
 		(URANGE_CHECK((uint64_t)p_addr->z, 0x3) << 62) |
 		(URANGE_CHECK((uint64_t)p_addr->y, 0x7FFFFFFF) << 31) |
 		URANGE_CHECK(p_addr->x, 0x7FFFFFFF);
-	uint64_t umix = grp * 8249772677985670961ull;
+	uint64_t umix = grp*8249772677985670961ull;
 	return (umix >> 48) ^ umix;
 }
 
 #if 0
 static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y, uint32_t *p_z) {
 	uint64_t umix = (id >> 48) ^ id;
-	uint64_t grp = umix * 7426732773883044305ull;
+	uint64_t grp = umix*7426732773883044305ull;
 	*p_z = (uint32_t)(grp >> 62);
 	*p_y = (uint32_t)((grp >> 31) & 0x7FFFFFFF);
 	*p_x = (uint32_t)(grp & 0x7FFFFFFF);
@@ -681,7 +681,7 @@ static int program_is_valid(struct program *p_program) {
 
 static void program_stack_push(struct program *p_program, void *p_ptr) {
 	if (p_program->stack_count >= p_program->stack_alloc_count) {
-		size_t newsz = ((p_program->stack_alloc_count * 4) / 3) & ~(size_t)0xff;
+		size_t newsz = ((p_program->stack_alloc_count*4)/3) & ~(size_t)0xff;
 		void **pp_new_list;
 		if (newsz < 1024)
 			newsz = 1024;
@@ -696,7 +696,7 @@ static void program_stack_push(struct program *p_program, void *p_ptr) {
 static uint32_t *program_code_reserve(struct program *p_program, size_t n) {
 	p_program->code_count += n;
 	if (p_program->code_count >= p_program->code_alloc_count) {
-		size_t    newsz = ((p_program->code_count * 4) / 3) & ~(size_t)0xff;
+		size_t    newsz = ((p_program->code_count*4)/3) & ~(size_t)0xff;
 		uint32_t *p_new_code;
 		if (newsz < 1024)
 			newsz = 1024;
@@ -1128,15 +1128,15 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		}
 
 		/* clear states ready for processing. */
-		memset(p_program->p_data, 0, sizeof(uint64_t) * ((p_program->net_count + 63)/64));
-		memset(p_program->p_last_data, 0, sizeof(uint64_t) * ((p_program->net_count + 63)/64));
+		memset(p_program->p_data, 0, sizeof(uint64_t)*((p_program->net_count + 63)/64));
+		memset(p_program->p_last_data, 0, sizeof(uint64_t)*((p_program->net_count + 63)/64));
 	}
 
 #if PROGRAM_DEBUG
 	{
 		size_t    i;
 		uint32_t *p_code = p_program->p_code;
-		printf("program stored in %llu words (%llu bytes)\n", (unsigned long long)p_program->code_count, ((unsigned long long)(p_program->code_count * 4)));
+		printf("program stored in %llu words (%llu bytes)\n", (unsigned long long)p_program->code_count, ((unsigned long long)(p_program->code_count*4)));
 		for (i = 0; i < p_program->net_count; i++) {
 			size_t nb_sources = *p_code++;
 			if (nb_sources == 0) {
@@ -1173,17 +1173,17 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 #define ASR(n_, b_) ((n_) >> (b_))
 
 #define SQRT3   (1.732050807568877f)
-#define SQRT3_4 (SQRT3 * 0.5f)
+#define SQRT3_4 (SQRT3*0.5f)
 
 int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, float cursor_x, float cursor_y, ImVec2 *prcc) {
-	int64_t thx     = bl_x + (int32_t)(cursor_x * (65536.0f / 3.0f));
-	int64_t thy     = bl_y + (int32_t)(cursor_y * (65536.0f / SQRT3_4));
+	int64_t thx     = bl_x + (int32_t)(cursor_x*(65536.0f/3.0f));
+	int64_t thy     = bl_y + (int32_t)(cursor_y*(65536.0f/SQRT3_4));
 
 	int64_t wholex  = ASR(thx, 16);
-	int64_t wholey  = ASR(thy, 17) * 2;
+	int64_t wholey  = ASR(thy, 17)*2;
 
-	float   fbl_x   = ((float)(int32_t)(((uint32_t)thx) & 0xFFFF)) * (3.0f / 65536.0f);
-	float   fbl_y   = ((float)(int32_t)(((uint32_t)thy) & 0x1FFFF)) * (SQRT3_4 / 65536.0f);
+	float   fbl_x   = ((float)(int32_t)(((uint32_t)thx) & 0xFFFF))*(3.0f/65536.0f);
+	float   fbl_y   = ((float)(int32_t)(((uint32_t)thy) & 0x1FFFF))*(SQRT3_4/65536.0f);
 
 	float y_dbot    = fbl_y;
 	float y_dmid    = fbl_y - SQRT3_4;
@@ -1192,12 +1192,12 @@ int get_cursor_hex_addr(struct gridaddr *p_addr, int64_t bl_x, int64_t bl_y, flo
 	float x_dmid    = fbl_x - 1.5f;
 	float x_dright  = fbl_x - 3.0f;
 
-	float y_dbot2   = y_dbot * y_dbot;
-	float y_dmid2   = y_dmid * y_dmid;
-	float y_dtop2   = y_dtop * y_dtop;
-	float x_dleft2  = x_dleft * x_dleft;
-	float x_dmid2   = x_dmid * x_dmid;
-	float x_dright2 = x_dright * x_dright;
+	float y_dbot2   = y_dbot*y_dbot;
+	float y_dmid2   = y_dmid*y_dmid;
+	float y_dtop2   = y_dtop*y_dtop;
+	float x_dleft2  = x_dleft*x_dleft;
+	float x_dmid2   = x_dmid*x_dmid;
+	float x_dright2 = x_dright*x_dright;
 
 	int32_t offset_x = 0;
 	int32_t offset_y = 0;
@@ -1290,8 +1290,8 @@ struct highlighted_cell {
 static void vmpy(float *p_x, float *p_y, float x2, float y2) {
 	float x1 = *p_x;
 	float y1 = *p_y;
-	*p_x = x1 * x2 - y1 * y2;
-	*p_y = x1 * y2 + y1 * x2;
+	*p_x = x1*x2 - y1*y2;
+	*p_y = x1*y2 + y1*x2;
 }
 
 static int get_next_connection_type(int old) {
@@ -1321,7 +1321,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	ImVec2 graph_size;
 	float radius = p_state->radius;
 	graph_size.x = ImGui::CalcItemWidth();
-	graph_size.y = style.FramePadding.y * 2 + 700;
+	graph_size.y = style.FramePadding.y*2 + 700;
 
     const ImRect frame_bb(window->DC.CursorPos, iv2_add(window->DC.CursorPos, graph_size));
     const ImRect inner_bb(iv2_add(frame_bb.Min, style.FramePadding), iv2_sub(frame_bb.Max, style.FramePadding));
@@ -1345,8 +1345,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	int errors = 0;
 
-	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x / radius,  mprel.y / radius, &(hc.pos_in_cell))) {
-		float rat = hc.pos_in_cell.y / hc.pos_in_cell.x;
+	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x/radius,  mprel.y/radius, &(hc.pos_in_cell))) {
+		float rat = hc.pos_in_cell.y/hc.pos_in_cell.x;
 		hc.edge_idx = EDGE_DIR_N;
 		hc.layer_idx = 0;
 
@@ -1524,8 +1524,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	if (p_state->mouse_down) {
 		ImVec2 drag = iv2_sub(mprel, p_state->mouse_down_pos);
 
-		bl_x -= (int64_t)(drag.x / (radius * 3.0f) * 65536.0f);
-		bl_y -= (int64_t)(drag.y / (radius * 0.866f) * 65536.0f);
+		bl_x -= (int64_t)(drag.x/(radius*3.0f)*65536.0f);
+		bl_y -= (int64_t)(drag.y/(radius*0.866f)*65536.0f);
 
 		if (bl_x < 0)
 			bl_x = 0;
@@ -1542,16 +1542,16 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	if (hovered) {
 		if (io.MouseWheel != 0.0f) {
-			bl_x -= (int64_t)(-mprel.x / (radius * 3.0f) * 65536.0f);
-			bl_y -= (int64_t)(-mprel.y / (radius * 0.866f) * 65536.0f);
+			bl_x -= (int64_t)(-mprel.x/(radius*3.0f)*65536.0f);
+			bl_y -= (int64_t)(-mprel.y/(radius*0.866f)*65536.0f);
 
-			radius *= powf(2.0, io.MouseWheel / 40.0f);
+			radius *= powf(2.0, io.MouseWheel/40.0f);
 			if (radius < 3.0f)
 				radius = 3.0f;
 			p_state->radius = radius;
 
-			bl_x -= (int64_t)(+mprel.x / (radius * 3.0f) * 65536.0f);
-			bl_y -= (int64_t)(+mprel.y / (radius * 0.866f) * 65536.0f);
+			bl_x -= (int64_t)(+mprel.x/(radius*3.0f)*65536.0f);
+			bl_y -= (int64_t)(+mprel.y/(radius*0.866f)*65536.0f);
 
 			if (bl_x < 0)
 				bl_x = 0;
@@ -1577,20 +1577,20 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	uint32_t cell_y = ((uint64_t)bl_y) >> 16;
 	do {
-		int64_t cy = ((int64_t)(int32_t)cell_y) * 65536;
-		float oy = (cy - bl_y) * radius * 0.866f / 65536.0f;
+		int64_t cy = ((int64_t)(int32_t)cell_y)*65536;
+		float oy = (cy - bl_y)*radius*0.866f/65536.0f;
 
 		if (oy - radius > window_height)
 			break;
 
 		uint32_t cell_x = ((uint64_t)bl_x) >> 16;
 		do {
-			int64_t cx = ((int64_t)(int32_t)cell_x) * 65536;
+			int64_t cx = ((int64_t)(int32_t)cell_x)*65536;
 			
 			/* find the pixel coordinate of the centre of this element. */
-			float ox = (cx - bl_x) * radius * 3.0f / 65536.0f;
+			float ox = (cx - bl_x)*radius*3.0f/65536.0f;
 			if (cell_y & 0x1)
-				ox += radius * 1.5f;
+				ox += radius*1.5f;
 
 			/* if none of this object is visible, we're done. */
 			if (ox - radius > window_width)
@@ -1619,30 +1619,30 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			float edge_length = radius;
 
 			/* the edge length of the inner edge. constant. */
-			float l = edge_length / 1.366f;
+			float l = edge_length/1.366f;
 
 			/* the distance between the midpoint of the inner edge and the next circle midpoint
 			 * and is also the distance between the edge and the inner edge that all circles lie on. constant */
-			float k = l / 3.15470054f;
+			float k = l/3.15470054f;
 
 			/* the radius of circles on the inner edge if they were all touching (used for click regions) */
-			float touching_radius = k / 2.0f;
+			float touching_radius = k/2.0f;
 
 			/* the radius of the circles on the inner edge - this number could be between k/2 (touching) and probably k/3 */
-			float r = k / 2.8f;
+			float r = k/2.8f;
 
 			float a_grid_x[4];
 			float a_grid_y[4];
 
-			a_grid_x[0] = p.x - 0.5f * edge_length;
-			a_grid_x[1] = p.x + 0.5f * edge_length;
-			a_grid_x[2] = p.x + 1.0f * edge_length;
-			a_grid_x[3] = p.x + 0.5f * edge_length;
+			a_grid_x[0] = p.x - 0.5f*edge_length;
+			a_grid_x[1] = p.x + 0.5f*edge_length;
+			a_grid_x[2] = p.x + 1.0f*edge_length;
+			a_grid_x[3] = p.x + 0.5f*edge_length;
 
-			a_grid_y[0] = p.y - 0.866f * edge_length;
-			a_grid_y[1] = p.y - 0.866f * edge_length;
+			a_grid_y[0] = p.y - 0.866f*edge_length;
+			a_grid_y[1] = p.y - 0.866f*edge_length;
 			a_grid_y[2] = p.y;
-			a_grid_y[3] = p.y + 0.866f * edge_length;
+			a_grid_y[3] = p.y + 0.866f*edge_length;
 
 			{
 				float a_x[3];
@@ -1698,7 +1698,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					/* logic for click operations for our cell */
 					for (j = 0; j < 3; j++) { /* for each layer of this edge... */
 						float xrc = mpxrc - (-k + j*k);
-						float yrc = mpyrc - (k - 0.866f * edge_length);
+						float yrc = mpyrc - (k - 0.866f*edge_length);
 						if  (   xrc > -touching_radius
 						    &&  xrc < touching_radius
 						    &&  (   (yrc > -k && yrc < 0.0f) /* in the square between the inner and outer hexagon edges */
@@ -1719,7 +1719,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					/* logic for click operations for the neighbour cell */
 					for (j = 0; j < 3; j++) { /* for each layer of this edge... */
 						float xrc = mpxrc - (-k + j*k);
-						float yrc = mpyrc - (-k - 0.866f * edge_length);
+						float yrc = mpyrc - (-k - 0.866f*edge_length);
 						if  (   xrc > -k*0.5f
 						    &&  xrc < k*0.5f
 						    &&  (   (yrc > 0.0 && yrc < k) /* in the square between the inner and outer hexagon edges */
@@ -1762,7 +1762,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 						a_grid_rgb[0] = 192 + ((a_busted_edges[1]||a_busted_edges[2]) ? -64 : 32);
 						a_grid_rgb[1] = 192 + ((a_busted_edges[0]||a_busted_edges[2]) ? -64 : 32);
 						a_grid_rgb[2] = 192 + ((a_busted_edges[0]||a_busted_edges[1]) ? -64 : 32);
-						p_list->AddLine(ImVec2(a_grid_x[i], a_grid_y[i]), ImVec2(a_grid_x[i+1], a_grid_y[i+1]), ImColor(a_grid_rgb[0], a_grid_rgb[1], a_grid_rgb[2]), 2 * edge_length / 40);
+						p_list->AddLine(ImVec2(a_grid_x[i], a_grid_y[i]), ImVec2(a_grid_x[i+1], a_grid_y[i+1]), ImColor(a_grid_rgb[0], a_grid_rgb[1], a_grid_rgb[2]), 2*edge_length/40);
 
 						for (j = 0; j < NUM_LAYERS; j++) { /* for each layer of this edge... */
 							ImU32 layer_colour = ImColor
@@ -1838,16 +1838,16 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 #if 0
 			/* pointing upwards */
-			ImVec2 tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x) / 3, inner_n1.y);
-			ImVec2 tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x) / 6, inner_n1.y - (inner_n2.x - inner_n1.x) / 4);
-			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2 * edge_length / 40);
-			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2 * edge_length / 40);
+			ImVec2 tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/3, inner_n1.y);
+			ImVec2 tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/6, inner_n1.y - (inner_n2.x - inner_n1.x)/4);
+			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2*edge_length/40);
+			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2*edge_length/40);
 
 			/* pointing downwards */
-			tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x) / 3, inner_n1.y);
-			tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x) / 6, inner_n1.y + (inner_n2.x - inner_n1.x) / 4);
-			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2 * edge_length / 40);
-			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2 * edge_length / 40);
+			tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/3, inner_n1.y);
+			tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/6, inner_n1.y + (inner_n2.x - inner_n1.x)/4);
+			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2*edge_length/40);
+			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2*edge_length/40);
 #endif
 
 
@@ -1859,7 +1859,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &addr, 0);
 			if (p_cell != NULL) {
 				if (gridcell_are_layers_fused_get(p_cell)) {
-					p_list->AddCircleFilled(p, radius * 0.25, ImColor(128, 128, 128, 255), 17);
+					p_list->AddCircleFilled(p, radius*0.25, ImColor(128, 128, 128, 255), 17);
 
 				}
 
@@ -1873,15 +1873,15 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 #if 0
 			if (cell_x == 0 && cell_y == 0)
-				p_list->AddCircle(p, radius * 0.5, ImColor(192, 0, 0, 255), 17, 2.0f * radius / 40);
+				p_list->AddCircle(p, radius*0.5, ImColor(192, 0, 0, 255), 17, 2.0f*radius/40);
 #endif
 
 #if 0
 			if (p_cell != NULL) {
 				if (p_cell->flags & CELLFLAG_IS_COMPUTING_MASK)
-					p_list->AddCircleFilled(p, radius * 0.5, ImColor(255, 0, 128, 255), 17);
+					p_list->AddCircleFilled(p, radius*0.5, ImColor(255, 0, 128, 255), 17);
 				else if (p_cell->flags & CELLFLAG_CURRENT_VALUE_MASK)
-					p_list->AddCircleFilled(p, radius * 0.1, ImColor(0, 255, 0, 255), 17);
+					p_list->AddCircleFilled(p, radius*0.1, ImColor(0, 255, 0, 255), 17);
 
 			}
 #endif
@@ -1900,7 +1900,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	if (ImGui::IsItemHovered() && p_hc != NULL)
 	{
 		ImGui::BeginTooltip();
-		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
 		ImGui::Text
 			("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d errors=%d layer=%d"
@@ -1953,7 +1953,7 @@ int main(int argc, char **argv)
 		printf("%d,%d,%d\n", i, pos.x, pos.y);
 	}
 	for (i = 0; i < 100; i++) {
-		if (gridaddr_edge_neighbour(&pos, &pos, dir_get_opposing(directions[(i * 13) % 100])))
+		if (gridaddr_edge_neighbour(&pos, &pos, dir_get_opposing(directions[(i*13)%100])))
 			abort();
 		printf("%d,%d,%d\n", i, pos.x, pos.y);
 	}
@@ -1979,8 +1979,8 @@ int main(int argc, char **argv)
 	for (i = 0; i < 30; i++) {
 		struct gridcell *p_neighbour;
 		int edge_ctl;
-		int edge_dir = (pdir = (pdir * 16 + 112 * (rand() % EDGE_DIR_NUM) + 64) / 128);
-		int virt_dir = rand() % VERTEX_DIR_NUM;
+		int edge_dir = (pdir = (pdir*16 + 112*(rand()%EDGE_DIR_NUM) + 64)/128);
+		int virt_dir = rand()%VERTEX_DIR_NUM;
 		int virt_ctl = rand() & 1;
 
 		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir, 1)) == NULL)
@@ -1990,7 +1990,7 @@ int main(int argc, char **argv)
 		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir, 1)) == NULL)
 			abort();
 		
-		switch (rand() % 5) {
+		switch (rand()%5) {
 			case 0: edge_ctl = EDGE_TYPE_NOTHING; break;
 			case 1: edge_ctl = EDGE_TYPE_RECEIVER_DF; break;
 			case 2: edge_ctl = EDGE_TYPE_RECEIVER_DI; break;
@@ -2089,8 +2089,8 @@ int main(int argc, char **argv)
 
 	struct plot_grid_state plot_state;
 	plot_state.radius = 40.0f;
-	plot_state.bl_x = 0x40000000ull * 65536;
-	plot_state.bl_y = 0x40000000ull * 65536;
+	plot_state.bl_x = 0x40000000ull*65536;
+	plot_state.bl_y = 0x40000000ull*65536;
 	plot_state.mouse_down = 0;
 
 	struct program prog;
@@ -2134,7 +2134,7 @@ int main(int argc, char **argv)
 			ImGui::SameLine();
 			ImGui::Text("counter = %d", counter);
 
-			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 			ImGui::End();
 
 		}
@@ -2159,9 +2159,9 @@ int main(int argc, char **argv)
 			ImGui::BeginGroup();
 			ImGui::Text("Grid Width: %lld", (long long)width);
 			ImGui::Text("Grid Height: %lld", (long long)height);
-			ImGui::Text("Grid Area: %lld", (long long)width * height);
+			ImGui::Text("Grid Area: %lld", (long long)width*height);
 			ImGui::Text("Total Cells: %ld", (long)gs.stats.num_cells);
-			ImGui::Text("Area Efficiency %f", gs.stats.num_cells * 100.0f / (float)(width * height));
+			ImGui::Text("Area Efficiency %f", gs.stats.num_cells*100.0f/(float)(width*height));
 			ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
 			ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
 			ImGui::EndGroup();
@@ -2174,7 +2174,7 @@ int main(int argc, char **argv)
 		int display_w, display_h;
 		glfwGetFramebufferSize(window, &display_w, &display_h);
 		glViewport(0, 0, display_w, display_h);
-		glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+		glClearColor(clear_color.x*clear_color.w, clear_color.y*clear_color.w, clear_color.z*clear_color.w, clear_color.w);
 		glClear(GL_COLOR_BUFFER_BIT);
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -2301,15 +2301,15 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 #define ARROW_SIZE (1.1f)
 
 	if (edge_mode_ne) {
-		float mx1 = px + dvecx * (radius*(1.0f-ARROW_SIZE*0.5f));
-		float my1 = py + dvecy * (radius*(1.0f-ARROW_SIZE*0.5f));
-		float mx2 = px + dvecx * (radius*(1.0f+ARROW_SIZE*0.5f));
-		float my2 = py + dvecy * (radius*(1.0f+ARROW_SIZE*0.5f));
+		float mx1 = px + dvecx*(radius*(1.0f-ARROW_SIZE*0.5f));
+		float my1 = py + dvecy*(radius*(1.0f-ARROW_SIZE*0.5f));
+		float mx2 = px + dvecx*(radius*(1.0f+ARROW_SIZE*0.5f));
+		float my2 = py + dvecy*(radius*(1.0f+ARROW_SIZE*0.5f));
 
-		float nvecx  = r30x * dvecx - r30y * dvecy;
-		float nvecy  = r30x * dvecy + r30y * dvecx;
-		float nvecx2 = r30x * dvecx + r30y * dvecy;
-		float nvecy2 = r30x * dvecy - r30y * dvecx;
+		float nvecx  = r30x*dvecx - r30y*dvecy;
+		float nvecy  = r30x*dvecy + r30y*dvecx;
+		float nvecx2 = r30x*dvecx + r30y*dvecy;
+		float nvecy2 = r30x*dvecy - r30y*dvecx;
 
 		float ax1, ay1, ax2, ay2;
 
@@ -2320,53 +2320,53 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 			||  edge_mode_ne == EDGE_RECEIVING_DI
 			||  edge_mode_ne == EDGE_RECEIVING_I
 			) {
-			ax1 = mx1 + nvecx * radius * SHAPE_SIZE;
-			ay1 = my1 + nvecy * radius * SHAPE_SIZE;
-			ax2 = mx1 + nvecx2 * radius * SHAPE_SIZE;
-			ay2 = my1 + nvecy2 * radius * SHAPE_SIZE;
+			ax1 = mx1 + nvecx*radius*SHAPE_SIZE;
+			ay1 = my1 + nvecy*radius*SHAPE_SIZE;
+			ax2 = mx1 + nvecx2*radius*SHAPE_SIZE;
+			ay2 = my1 + nvecy2*radius*SHAPE_SIZE;
 
 			if  (   edge_mode_ne == EDGE_RECEIVING_DF
 				||  edge_mode_ne == EDGE_RECEIVING_F
 				)
 				p_list->AddTriangleFilled(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40.0f);
+				p_list->AddTriangle(ImVec2(mx1, my1), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f*radius/40.0f);
 
-			mx1 = (ax1 + ax2) * 0.5f;
-			my1 = (ay1 + ay2) * 0.5f;
+			mx1 = (ax1 + ax2)*0.5f;
+			my1 = (ay1 + ay2)*0.5f;
 		} else if (edge_mode_ne != EDGE_NOTHING) {
-			ax1 = mx2 - nvecx * radius * SHAPE_SIZE;
-			ay1 = my2 - nvecy * radius * SHAPE_SIZE;
-			ax2 = mx2 - nvecx2 * radius * SHAPE_SIZE;
-			ay2 = my2 - nvecy2 * radius * SHAPE_SIZE;
+			ax1 = mx2 - nvecx*radius*SHAPE_SIZE;
+			ay1 = my2 - nvecy*radius*SHAPE_SIZE;
+			ax2 = mx2 - nvecx2*radius*SHAPE_SIZE;
+			ay2 = my2 - nvecy2*radius*SHAPE_SIZE;
 
 			if  (   edge_mode_ne == EDGE_SENDING_DF
 				||  edge_mode_ne == EDGE_SENDING_F
 				)
 				p_list->AddTriangleFilled(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c);
 			else
-				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f * radius / 40.0f);
+				p_list->AddTriangle(ImVec2(mx2, my2), ImVec2(ax1, ay1), ImVec2(ax2, ay2), c, 2.0f*radius/40.0f);
 
-			mx2 = (ax1 + ax2) * 0.5f;
-			my2 = (ay1 + ay2) * 0.5f;
+			mx2 = (ax1 + ax2)*0.5f;
+			my2 = (ay1 + ay2)*0.5f;
 		}
 
 		if  (   edge_mode_ne == EDGE_SENDING_DF
 			||  edge_mode_ne == EDGE_SENDING_DI
 			) {
-			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx1 + dvecx * r, my1 + dvecy * r), r, c, 11, 2.0f * radius / 40.0f);
-			mx1 += dvecx * r * 2.0f;
-			my1 += dvecy * r * 2.0f;
+			float r = radius*SHAPE_SIZE*0.5f;
+			p_list->AddCircle(ImVec2(mx1 + dvecx*r, my1 + dvecy*r), r, c, 11, 2.0f*radius/40.0f);
+			mx1 += dvecx*r*2.0f;
+			my1 += dvecy*r*2.0f;
 		
 		} else if
 			(   edge_mode_ne == EDGE_RECEIVING_DF
 			||  edge_mode_ne == EDGE_RECEIVING_DI
 			) {
-			float r = radius * SHAPE_SIZE * 0.5f;
-			p_list->AddCircle(ImVec2(mx2 - dvecx * r, my2 - dvecy * r), r, c, 11, 2.0f * radius / 40.0f);
-			mx2 -= dvecx * r * 2.0f;
-			my2 -= dvecy * r * 2.0f;
+			float r = radius*SHAPE_SIZE*0.5f;
+			p_list->AddCircle(ImVec2(mx2 - dvecx*r, my2 - dvecy*r), r, c, 11, 2.0f*radius/40.0f);
+			mx2 -= dvecx*r*2.0f;
+			my2 -= dvecy*r*2.0f;
 		}
 
 		assert(isnormal(mx1));
@@ -2374,7 +2374,7 @@ static void draw_edge_arrows(int edge_mode_ne, float px, float py, float dvecx, 
 		assert(isnormal(mx2));
 		assert(isnormal(my2));
 
-		p_list->AddLine(ImVec2(mx1, my1), ImVec2(mx2, my2), c, 2.0f * radius / 40.0f);
+		p_list->AddLine(ImVec2(mx1, my1), ImVec2(mx2, my2), c, 2.0f*radius/40.0f);
 	}
 
 
