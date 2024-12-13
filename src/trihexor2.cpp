@@ -601,17 +601,17 @@ static void program_run(struct program *p_program) {
 		uint64_t  dest_bit   = BIT_MASKS[dest_net & 0x3F];
 		uint64_t  dest_val   = *p_dest;
 		while (/* early exit condition */ (dest_val & dest_bit) == 0 && nb_sources--) {
-			uint32_t  op         = *p_code++;
-			uint32_t  src_net    = *p_code++;
-			uint64_t *p_data_src = (op & 0x1) ? p_program->p_last_data : p_program->p_data;
-			uint64_t  src_data   = (assert((op & 0x1) != 0 || (src_net < dest_net)), p_data_src[src_net >> 6]);
-			uint64_t  src_val    = src_data; /* (op & 0x2) ? ~src_data : src_data; <<<<< MAYBE - DO WE WANT DIODES? */
+			uint32_t  word       = *p_code++;
+			uint32_t  src_net    = word & 0xFFFFFF;
+			uint64_t *p_data_src = (word & 0x1000000) ? p_program->p_last_data : p_program->p_data;
+			uint64_t  src_data   = (assert((word & 0x1000000) != 0 || (src_net < dest_net)), p_data_src[src_net >> 6]);
+			uint64_t  src_val    = src_data; /* (word & 0x2000000) ? ~src_data : src_data; <<<<< MAYBE - DO WE WANT DIODES? */
 			uint64_t  src_ctl    = src_val & BIT_MASKS[src_net & 0x3F];
 			dest_val |= (src_ctl) ? 0 : dest_bit;
-			assert(op < 2);
+			assert((word >> 24) < 2);
 		}
 		*p_dest = dest_val;
-		p_code += 2*nb_sources;
+		p_code += nb_sources;
 	}
 
 	/* pointer jiggle and state reset. */
@@ -697,8 +697,7 @@ static void program_stack_push(struct program *p_program, void *p_ptr) {
 	p_program->pp_stack[p_program->stack_count++] = p_ptr;
 }
 
-static uint32_t *program_code_reserve(struct program *p_program, size_t n) {
-	p_program->code_count += n;
+static uint32_t *program_code_reserve(struct program *p_program) {
 	if (p_program->code_count >= p_program->code_alloc_count) {
 		size_t    newsz = ((p_program->code_count*4)/3) & ~(size_t)0xff;
 		uint32_t *p_new_code;
@@ -709,7 +708,7 @@ static uint32_t *program_code_reserve(struct program *p_program, size_t n) {
 		p_program->p_code           = p_new_code;
 		p_program->code_alloc_count = newsz;
 	}
-	return &(p_program->p_code[p_program->code_count - n]);
+	return &(p_program->p_code[p_program->code_count++]);
 }
 
 static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits) {
@@ -1098,7 +1097,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
 			uint32_t j;
 			uint32_t num_sources = 0;
-			uint32_t *p_code_start = program_code_reserve(p_program, 1);
+			uint32_t *p_code_start = program_code_reserve(p_program);
 			assert(p_net->net_id == i);
 			for (j = 0; j < p_net->cell_count; j++) {
 				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
@@ -1110,17 +1109,14 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED || edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 						struct gridcell *p_neighbour         = gridcell_get_edge_neighbour(p_cell, k, 0);
 						uint32_t         neighbour_net       = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_neighbour->data);
-						uint32_t        *p_data              = program_code_reserve(p_program, 2);
 						assert(gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k)) == EDGE_LAYER_CONNECTION_SENDS);
 						if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 							assert(neighbour_net < i);
-							p_data[0] = 0;
-							p_data[1] = neighbour_net;
+							*(program_code_reserve(p_program)) = (0ull << 24) | neighbour_net;
 						} else {
 							assert(edge_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED);
 							assert(neighbour_net < p_program->net_count);
-							p_data[0] = 1;
-							p_data[1] = neighbour_net;
+							*(program_code_reserve(p_program)) = (1ull << 24) | neighbour_net;
 						}
 						num_sources++;
 					}
@@ -1135,7 +1131,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	}
 
 #if PROGRAM_DEBUG
-	{
+	0
 		size_t    i;
 		uint32_t *p_code = p_program->p_code;
 		printf("program stored in %llu words (%llu bytes)\n", (unsigned long long)p_program->code_count, ((unsigned long long)(p_program->code_count*4)));
@@ -1146,8 +1142,9 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			} else {
 				printf("  net %llu has %llu sources\n", (unsigned long long)i, (unsigned long long)nb_sources);
 				while (nb_sources--) {
-					uint32_t  op         = *p_code++;
-					uint32_t  src_net    = *p_code++;
+					uint32_t  word       = *p_code++;
+					uint32_t  op         = word >> 24;
+					uint32_t  src_net    = word & 0xFFFFFF;
 					const char *p_opname;
 					if (op == 0) {
 						assert(src_net < i);
