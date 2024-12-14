@@ -1290,9 +1290,6 @@ struct plot_grid_state {
 struct highlighted_cell {
 	struct gridaddr addr;
 	ImVec2          pos_in_cell;
-
-	int layer_idx;
-	int edge_idx;
 	
 };
 
@@ -1315,6 +1312,227 @@ static int get_next_connection_type(int old) {
 		assert(old == EDGE_LAYER_CONNECTION_UNCONNECTED || old == EDGE_LAYER_CONNECTION_SENDS);
 		return EDGE_LAYER_CONNECTION_RECEIVES_INVERTED;
 	}
+}
+
+struct visible_cell_info {
+	struct gridaddr addr_l0;
+
+	float    centre_pixel_x;
+	float    centre_pixel_y;
+
+	int      b_cursor_in_cell;
+	float    cursor_relative_to_centre_x;
+	float    cursor_relative_to_centre_y;
+
+
+};
+
+struct visible_cell_iterator {
+	float scale;
+	float invscale;
+	float window_width;
+	float window_height;
+	float min_x;
+	float max_y;
+	float mouse_x;
+	float mouse_y;
+	int64_t bl_y;
+	int64_t bl_x; 
+
+	struct visible_cell_info info;
+
+};
+
+void
+visible_cell_iterator_init
+	(struct visible_cell_iterator *p_iter
+	,int64_t bl_x
+	,int64_t bl_y
+	,const ImRect &inner_bb
+	,float scale
+	,const ImVec2 &cursor_pos
+	) {
+	ImVec2 vMin = inner_bb.Min;
+	ImVec2 vMax = inner_bb.Max;
+	p_iter->bl_x           = bl_x;
+	p_iter->bl_y           = bl_y;
+	p_iter->scale          = scale;
+	p_iter->invscale       = 1.0f / scale;
+	p_iter->window_width   = vMax.x - vMin.x;
+	p_iter->window_height  = vMax.y - vMin.y;
+	p_iter->info.addr_l0.y = ((uint64_t)bl_y) >> 16;
+	p_iter->info.addr_l0.x = (((uint64_t)bl_x) >> 16) - 1; /* compensates for pre increment */
+	p_iter->info.addr_l0.z = 0;
+	p_iter->min_x          = vMin.x;
+	p_iter->max_y          = vMax.y;
+	p_iter->mouse_x        = cursor_pos.x;
+	p_iter->mouse_y        = cursor_pos.y;
+}
+
+const struct visible_cell_info *visible_cell_iterator_next(struct visible_cell_iterator *p_iter) {
+	do {
+		int64_t cy, cx;
+		float   oy, ox;
+		float   mrpx, mrpy;
+
+		cy = ((int64_t)(int32_t)p_iter->info.addr_l0.y)*65536;
+		oy = (cy - p_iter->bl_y)*p_iter->scale*0.866f/65536.0f;
+		if (oy - p_iter->scale > p_iter->window_height) {
+			return NULL;
+		}
+
+		p_iter->info.addr_l0.x++;
+		cx = ((int64_t)(int32_t)p_iter->info.addr_l0.x)*65536;
+		ox = (cx - p_iter->bl_x)*p_iter->scale*3.0f/65536.0f;
+		if (p_iter->info.addr_l0.y & 0x1)
+			ox += p_iter->scale*1.5f;
+
+		if (ox - p_iter->scale > p_iter->window_width) {
+			p_iter->info.addr_l0.y++;
+			p_iter->info.addr_l0.x = (((uint64_t)p_iter->bl_x) >> 16) - 1; /* compensates for pre increment */
+			continue;
+		}
+
+		p_iter->info.centre_pixel_x = p_iter->min_x + ox;
+		p_iter->info.centre_pixel_y = p_iter->max_y - oy;
+
+		mrpx = (p_iter->mouse_x - p_iter->info.centre_pixel_x)*p_iter->invscale;
+		mrpy = (p_iter->mouse_y - p_iter->info.centre_pixel_y)*p_iter->invscale;
+
+		p_iter->info.b_cursor_in_cell =
+			(   (mrpy >= -SQRT3_4 && mrpy <= SQRT3_4)
+			&&  (   (mrpx >= -0.5f && mrpx <= 0.5f)
+			    ||  (mrpx < -0.5f && fabsf(mrpy) < (1.0f + mrpx)*SQRT3)
+			    ||  (mrpx > 0.5f && fabsf(mrpy) < (1.0f - mrpx)*SQRT3)
+			    )
+			);
+		
+		if (p_iter->info.b_cursor_in_cell) {
+			p_iter->info.cursor_relative_to_centre_x = mrpx;
+			p_iter->info.cursor_relative_to_centre_y = mrpy;
+		} else {
+			p_iter->info.cursor_relative_to_centre_x = 0.0f;
+			p_iter->info.cursor_relative_to_centre_y = 0.0f;
+		}
+
+		return &(p_iter->info);
+	} while (1);
+
+	return NULL;
+}
+
+struct layer_edge_info {
+	struct gridaddr addr;
+	struct gridaddr addr_other;
+	int             b_mouse_over_either;
+	int             b_mouse_over_other;
+
+	/* centre pixel of the cell at addr */
+	float           centre_pixel_x;
+	float           centre_pixel_y;
+
+	int             layer;
+
+	/* the edge of addr we are looking at */
+	int             edge;
+
+};
+
+struct layer_edge_iterator {
+	struct visible_cell_iterator cell_iter;
+	const struct visible_cell_info *p_info;
+	float mpxrc_rs;
+	float mpyrc_rs;
+
+	struct layer_edge_info info;
+
+};
+
+void
+layer_edge_iterator_init
+	(struct layer_edge_iterator *p_iter
+	,int64_t bl_x
+	,int64_t bl_y
+	,const ImRect &inner_bb
+	,float scale
+	,const ImVec2 &cursor_pos
+	) {
+	visible_cell_iterator_init(&(p_iter->cell_iter), bl_x, bl_y, inner_bb, scale, cursor_pos);
+	p_iter->info.edge  = 2;
+	p_iter->info.layer = 2;
+
+}
+
+/* Properties of our hexagons... */
+
+#define HEXAGON_CENTRE_TO_VERTEX_DISTANCE                        (1.0f)
+#define HEXAGON_EDGE_LENGTH                                      (HEXAGON_CENTRE_TO_VERTEX_DISTANCE)
+#define HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE                   (SQRT3_4)
+#define HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE                  ((1.0f + SQRT3)/(2.0f + SQRT3)) /* ~0.73205 */
+#define HEXAGON_INNER_EDGE_LENGTH                                (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE)
+#define HEXAGON_INNER_CENTRE_TO_EDGE_CENTRE_DISTANCE             (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE*SQRT3_4) /* ~0.634 */
+#define HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE            (HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_CENTRE_TO_EDGE_CENTRE_DISTANCE) /* ~0.2 - maybe exact? */
+
+/* If each inner edge contains 3 points: one in the centre and the other two
+ * spaced +/- this value, this is the unique value such that circles could be
+ * drawn centred on each point with a radius of half this value such that they
+ * would all touch without overlapping. */
+#define HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE ((SQRT3 + 3.0f)/(10.0f + 6.0f*SQRT3)) /* k = ~0.23205 */
+
+//#define HEXAGON_OPTIMAL_GAP                                      (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f)
+
+const struct layer_edge_info *layer_edge_iterator_next(struct layer_edge_iterator *p_iter) {
+	do {
+		if (p_iter->info.layer >= NUM_LAYERS - 1) {
+			if (p_iter->info.edge >= EDGE_DIR_NUM/2 - 1) {
+				if ((p_iter->p_info = visible_cell_iterator_next(&(p_iter->cell_iter))) == NULL)
+					return NULL;
+
+				p_iter->mpxrc_rs = (p_iter->cell_iter.mouse_x - p_iter->p_info->centre_pixel_x)*p_iter->cell_iter.invscale;
+				p_iter->mpyrc_rs = (p_iter->cell_iter.mouse_y - p_iter->p_info->centre_pixel_y)*p_iter->cell_iter.invscale;
+				p_iter->info.edge = 0;
+			} else {
+				p_iter->info.edge++;
+				vmpy(&(p_iter->mpxrc_rs), &(p_iter->mpyrc_rs), 0.5f, -SQRT3_4);
+			}
+			p_iter->info.layer = 0;
+		} else {
+			p_iter->info.layer++;
+		}
+
+		p_iter->info.centre_pixel_x = p_iter->p_info->centre_pixel_x;
+		p_iter->info.centre_pixel_y = p_iter->p_info->centre_pixel_y;
+		p_iter->info.addr.x = p_iter->p_info->addr_l0.x;
+		p_iter->info.addr.y = p_iter->p_info->addr_l0.y;
+		p_iter->info.addr.z = p_iter->info.layer;
+		if (gridaddr_edge_neighbour(&(p_iter->info.addr_other), &(p_iter->info.addr), p_iter->info.edge))
+			continue;
+
+		float touching_radius = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f;
+		float xrc  = p_iter->mpxrc_rs - (p_iter->info.layer - 1)*HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE;
+		float yrc  = p_iter->mpyrc_rs + (0.866f - HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE);
+		float yrc2 = p_iter->mpyrc_rs + (0.866f + HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE);
+
+		p_iter->info.b_mouse_over_other = 0;
+		p_iter->info.b_mouse_over_either = 0;
+
+		if  (   xrc > -touching_radius
+		    &&  xrc < touching_radius
+		    ) {
+			p_iter->info.b_mouse_over_other =
+				(   (yrc2 > 0.0 && yrc2 < HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE) /* in the square between the inner and outer hexagon edges */
+				||  xrc*xrc + yrc2*yrc2 < touching_radius*touching_radius /* in the circular landing shape at the end of the hexagon */
+				);
+			p_iter->info.b_mouse_over_either =
+				(   p_iter->info.b_mouse_over_other
+				||  (yrc > -HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE && yrc < 0.0f) /* in the square between the inner and outer hexagon edges */
+				||  xrc*xrc + yrc*yrc < touching_radius*touching_radius /* in the circular landing shape at the end of the hexagon */
+				);
+		}
+
+		return &(p_iter->info);
+	} while (1);
+	return NULL;
 }
 
 
@@ -1354,84 +1572,63 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	int errors = 0;
 
-	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x/radius,  mprel.y/radius, &(hc.pos_in_cell))) {
-		float rat = hc.pos_in_cell.y/hc.pos_in_cell.x;
-		hc.edge_idx = EDGE_DIR_N;
-		hc.layer_idx = 0;
+	struct visible_cell_iterator iter;
 
+	const struct visible_cell_info *p_info;
 
-#if 0
-		0.36397023 /* 20 */
-		0.83909963 /* 40 */
-		1.73205081 /* 60 */
-		5.67128182 /* 80 */
-#endif
-
-		if (hc.pos_in_cell.x > 0) {
-			if (rat < -5.671f) {
-				hc.edge_idx  = EDGE_DIR_S;    /* 0.5,-0.866 -> -0.5, 0.866 */
-				hc.layer_idx = 1;
-			} else if (rat < -1.732f) {
-				hc.edge_idx  = EDGE_DIR_S;    /* 0.5,-0.866 -> -0.5, 0.866 */
-				hc.layer_idx = 2;
-			} else if (rat < -0.839f) {
-				hc.edge_idx  = EDGE_DIR_SE;
-				hc.layer_idx = 0;
-			} else if (rat < -0.364f) {
-				hc.edge_idx  = EDGE_DIR_SE;
-				hc.layer_idx = 1;
-			} else if (rat < 0.0f) {
-				hc.edge_idx  = EDGE_DIR_SE;
-				hc.layer_idx = 2;
-			} else if (rat < 0.364f) {
-				hc.edge_idx = EDGE_DIR_NE;
-				hc.layer_idx = 0;
-			} else if (rat < 0.839f) {
-				hc.edge_idx = EDGE_DIR_NE;
-				hc.layer_idx = 1;
-			} else if (rat < 1.732f) {
-				hc.edge_idx = EDGE_DIR_NE;
-				hc.layer_idx = 2;
-			} else if (rat < 5.671f) {
-				hc.layer_idx = 2;
-				hc.edge_idx  = EDGE_DIR_N;
-			} else {
-				hc.edge_idx  = EDGE_DIR_N;
-				hc.layer_idx = 1;
-			}
-		} else {
-			if (rat > 5.671f) {
-				hc.edge_idx  = EDGE_DIR_S;
-				hc.layer_idx = 1;
-			} else if (rat > 1.732f) {
-				hc.edge_idx  = EDGE_DIR_S;
-				hc.layer_idx = 0;
-			} else if (rat > 0.839f) {
-				hc.edge_idx  = EDGE_DIR_SW;
-				hc.layer_idx = 0;
-			} else if (rat > 0.364f) {
-				hc.edge_idx  = EDGE_DIR_SW;
-				hc.layer_idx = 1;
-			} else if (rat > 0.0f) {
-				hc.edge_idx  = EDGE_DIR_SW;
-				hc.layer_idx = 2;
-			} else if (rat > -0.364f) {
-				hc.edge_idx  = EDGE_DIR_NW;
-				hc.layer_idx = 0;
-			} else if (rat > -0.839f) {
-				hc.edge_idx  = EDGE_DIR_NW;
-				hc.layer_idx = 1;
-			} else if (rat > -1.732f) {
-				hc.edge_idx  = EDGE_DIR_NW;
-				hc.layer_idx = 2;
-			} else if (rat > -5.671f) {
-				hc.edge_idx  = EDGE_DIR_N;
-				hc.layer_idx = 0;
-			} else {
-				hc.edge_idx  = EDGE_DIR_N;
-				hc.layer_idx = 1;
+	/* Handle edge clicks. */
+	struct layer_edge_iterator    edge_iter;
+	const struct layer_edge_info *p_edge_info;
+	layer_edge_iterator_init(&edge_iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
+	while ((p_edge_info = layer_edge_iterator_next(&edge_iter)) != NULL) {
+		if (g.IO.MouseClicked[0] && p_edge_info->b_mouse_over_either) {
+			const struct gridaddr *p_addr = (p_edge_info->b_mouse_over_other) ? &(p_edge_info->addr_other) : &(p_edge_info->addr);
+			int                    edge   = (p_edge_info->b_mouse_over_other) ? get_opposing_edge_id(p_edge_info->edge) : p_edge_info->edge;
+			struct gridcell       *p_cell;
+			if ((p_cell = gridstate_get_gridcell(p_st, p_addr, 1)) != NULL) {
+				if (!gridcell_set_neighbour_edge_connection_type(p_cell, edge, get_next_connection_type(gridcell_get_neighbour_edge_connection_type(p_cell, edge)))) {
+					program_compile(p_prog, p_st);
+				}
 			}
 		}
+	}
+
+	/* Handle centre clicks and double clicks. */
+	visible_cell_iterator_init(&iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
+	while ((p_info = visible_cell_iterator_next(&iter)) != NULL) {
+		if (p_info->b_cursor_in_cell && g.IO.MouseClicked[0]) {
+			if (g.IO.KeyShift) {
+				/* Clear all cell connections. */
+				struct gridcell *p_cell_l0 = gridstate_get_gridcell(p_st, &(p_info->addr_l0), 0);
+				if (p_cell_l0 != NULL) {
+					int i, j;
+					for (j = 0; j < NUM_LAYERS; j++) {
+						for (i = 0; i < EDGE_DIR_NUM; i++) {
+							if (gridcell_get_edge_neighbour(p_cell_l0 + 256*j, i, 0) != NULL) {
+								gridcell_set_neighbour_edge_connection_type(p_cell_l0 + 256*j, i, EDGE_LAYER_CONNECTION_UNCONNECTED);
+							}
+						}
+					}
+					/* todo - only do this if something changed. */
+					program_compile(p_prog, p_st);
+				}
+			} else {
+				/* Toggle layer fusing. */
+				float x = p_info->cursor_relative_to_centre_x;
+				float y = p_info->cursor_relative_to_centre_y;
+				if (x*x + y*y < 0.433*0.433) {
+					struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_info->addr_l0), 1);
+					if (p_cell != NULL) {
+						gridcell_are_layers_fused_toggle(p_cell);
+						program_compile(p_prog, p_st);
+					}
+				}
+			}
+		}
+	}
+
+
+	if (!get_cursor_hex_addr(&(hc.addr), bl_x, bl_y, mprel.x/radius,  mprel.y/radius, &(hc.pos_in_cell))) {
 
 		p_hc = &hc;
 	}
@@ -1445,80 +1642,6 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			p_state->mouse_down = 1;
 			make_active = 1;
 		}
-
-		if (g.IO.MouseDoubleClicked[0] && p_hc != NULL) {
-			//struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 0);
-			
-#if 0
-			if (p_cell != NULL) {
-				int i;
-				for (i = 0; i < EDGE_DIR_NUM; i++)
-					gridcell_set_edge_flags(p_cell, i, EDGE_TYPE_NOTHING);
-			}
-#endif
-		}
-
-		if (g.IO.MouseClicked[1] && p_hc != NULL) {
-			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 1);
-			if (p_cell != NULL) {
-				/* x goes from -1 to 1 and y goes from -.866 to .866*/
-				if (p_hc->pos_in_cell.x*p_hc->pos_in_cell.x + p_hc->pos_in_cell.y*p_hc->pos_in_cell.y < 0.433*0.433) {
-					gridcell_are_layers_fused_toggle(p_cell);
-					program_compile(p_prog, p_st);
-				}
-			}
-
-
-#if 0
-			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_hc->addr), 1);
-			if (p_cell != NULL) {
-				if (p_hc->b_close_to_edge) {
-					int get_edge_dir;
-					int virt_dir;
-					struct gridcell *p_nb;
-					switch (p_hc->edge_idx) {
-					case EDGE_DIR_N:  get_edge_dir = EDGE_DIR_NE; virt_dir = VERTEX_DIR_W; break;
-					case EDGE_DIR_NE: get_edge_dir = EDGE_DIR_SE; virt_dir = VERTEX_DIR_NW; break;
-					case EDGE_DIR_SE: get_edge_dir = EDGE_DIR_S;  virt_dir = VERTEX_DIR_NE; break;
-					case EDGE_DIR_S:  get_edge_dir = EDGE_DIR_SW; virt_dir = VERTEX_DIR_E; break;
-					case EDGE_DIR_SW: get_edge_dir = EDGE_DIR_NW; virt_dir = VERTEX_DIR_SE; break;
-					case EDGE_DIR_NW: get_edge_dir = EDGE_DIR_N;  virt_dir = VERTEX_DIR_SW; break;
-					default:
-						abort();
-					}
-					if ((p_nb = gridcell_get_edge_neighbour(p_cell, get_edge_dir, 1)) != NULL)
-						gridcell_set_vert_flags(p_nb, virt_dir, !gridcell_get_vert_flags(p_nb, virt_dir));
-
-				} else {
-					struct gridcell *p_nb;
-					int new_flag;
-					if ((p_nb = gridcell_get_edge_neighbour(p_cell, p_hc->edge_idx, 1)) != NULL) {
-						switch (gridcell_get_edge_flags(p_nb, get_opposing_edge_id(p_hc->edge_idx))) {
-						case EDGE_TYPE_NOTHING:
-							new_flag = EDGE_TYPE_RECEIVER_F;
-							break;
-						case EDGE_TYPE_RECEIVER_F:
-							new_flag = EDGE_TYPE_RECEIVER_I;
-							break;
-						case EDGE_TYPE_RECEIVER_I:
-							new_flag = EDGE_TYPE_RECEIVER_DF;
-							break;
-						case EDGE_TYPE_RECEIVER_DF:
-							new_flag = EDGE_TYPE_RECEIVER_DI;
-							break;
-						default:
-							new_flag = EDGE_TYPE_NOTHING;
-							break;
-						}
-						gridcell_set_edge_flags_adv(p_nb, p_cell, get_opposing_edge_id(p_hc->edge_idx), new_flag);
-					}
-				}
-
-			}
-#endif
-		}
-
-
 
 
 		if (make_active) {
@@ -1570,7 +1693,11 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 		}
 	}
 
-    ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImColor(255, 255, 255, 255), true, style.FrameRounding);
+	if (program_is_valid(p_prog)) {
+		program_run(p_prog);
+	}
+
+    ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, ImColor(128, 128, 128, 255), true, style.FrameRounding);
 
 	ImDrawList *p_list = ImGui::GetWindowDrawList();
 
@@ -1582,291 +1709,127 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	float window_width = vMax.x - vMin.x;
 	float window_height = vMax.y - vMin.y;
 
-	uint32_t cell_y = ((uint64_t)bl_y) >> 16;
-	do {
-		int64_t cy = ((int64_t)(int32_t)cell_y)*65536;
-		float oy = (cy - bl_y)*radius*0.866f/65536.0f;
 
-		if (oy - radius > window_height)
-			break;
+	/* 1) Draw hexagons */
+	visible_cell_iterator_init(&iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
+	while ((p_info = visible_cell_iterator_next(&iter)) != NULL) {
+		float            inner_radius = radius - 1.5f;
 
-		uint32_t cell_x = ((uint64_t)bl_x) >> 16;
-		do {
-			int64_t cx = ((int64_t)(int32_t)cell_x)*65536;
-			
-			/* find the pixel coordinate of the centre of this element. */
-			float ox = (cx - bl_x)*radius*3.0f/65536.0f;
-			if (cell_y & 0x1)
-				ox += radius*1.5f;
+		/* Draw a hexagon */
+		ImVec2 points[6];
+		points[0] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+		points[1] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+		points[2] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
+		points[3] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+		points[4] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+		points[5] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
+		p_list->AddConvexPolyFilled(points, 6, ImColor(255, 255, 255, 255));
+	}
 
-			/* if none of this object is visible, we're done. */
-			if (ox - radius > window_width)
-				break;
+	/* 2) Draw edges */
+	layer_edge_iterator_init(&edge_iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
+	while ((p_edge_info = layer_edge_iterator_next(&edge_iter)) != NULL) {
+		const float inner_edge_centre_points[][3] =
+			{{-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE, -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			};
+		const float neighbour_edge_centre_points[][3] =
+			{{-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE, -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+			};
+		const float edge_rotators[6][2] =
+			{{1.0f, 0.0f}
+			,{0.5f, SQRT3_4}
+			,{-0.5f, SQRT3_4}
+			,{-1.0f, 0.0f}
+			,{-0.5f, -SQRT3_4}
+			,{0.5f, -SQRT3_4}
+			};
+		struct gridcell *p_cell      = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
+		struct gridcell *p_neighbour = gridstate_get_gridcell(p_st, &(p_edge_info->addr_other), 0);
+		if (p_cell && p_neighbour) {
+			int              ctype         = gridcell_get_edge_connection_type(p_cell, p_edge_info->edge);
+			int              ntype         = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(p_edge_info->edge));
+			int              b_busted_edge = ((p_cell->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(p_edge_info->edge)) || (p_neighbour->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(get_opposing_edge_id(p_edge_info->edge))));
+			float            r             = radius*(HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8);
+			float            ax            = inner_edge_centre_points[p_edge_info->layer][0];
+			float            ay            = inner_edge_centre_points[p_edge_info->layer][1];
+			float            bx            = neighbour_edge_centre_points[p_edge_info->layer][0];
+			float            by            = neighbour_edge_centre_points[p_edge_info->layer][1];
+			float            rx            = edge_rotators[p_edge_info->edge][0]*radius;
+			float            ry            = edge_rotators[p_edge_info->edge][1]*radius;
+			ImU32 layer_colour = ImColor
+				(((p_edge_info->layer == 0) ? 196 : 128) - (b_busted_edge ? 64 : 0)
+				,((p_edge_info->layer == 1) ? 196 : 128) - (b_busted_edge ? 64 : 0)
+				,((p_edge_info->layer == 2) ? 196 : 128) - (b_busted_edge ? 64 : 0)
+				,255
+				);
 
-			ImVec2 p;
+			vmpy(&ax, &ay, rx, ry);
+			vmpy(&bx, &by, rx, ry);
 
-			p.x = vMin.x + ox;
-			p.y = vMax.y - oy;
+			float centre_x = p_edge_info->centre_pixel_x + ax;
+			float centre_y = p_edge_info->centre_pixel_y + ay;
+			float centre_nx = p_edge_info->centre_pixel_x + bx;
+			float centre_ny = p_edge_info->centre_pixel_y + by;
 
-
-			/* draw the segments marked X */
-			/*    XXX       ___             (X,y)
-			 *   /   X     /   \
-			 *  / 0,0 X___/ 1,0 \___
-			 *  \     X   \     /   \
-			 *   \___X 0,1 \___/ 1,1 \
-			 *   /   \     /   \     /
-			 *  / 0,2 \___/ 1,2 \___/
-			 *  \     /   \     /   \
-			 *   \___/ 0,3 \___/ 1,3 \
-			 *       \     /   \     /
-			 *        \___/     \___/
-			 */
-
-			float edge_length = radius;
-
-			/* the edge length of the inner edge. constant. */
-			float l = edge_length/1.366f;
-
-			/* the distance between the midpoint of the inner edge and the next circle midpoint
-			 * and is also the distance between the edge and the inner edge that all circles lie on. constant */
-			float k = l/3.15470054f;
-
-			/* the radius of circles on the inner edge if they were all touching (used for click regions) */
-			float touching_radius = k/2.0f;
-
-			/* the radius of the circles on the inner edge - this number could be between k/2 (touching) and probably k/3 */
-			float r = k/2.8f;
-
-			float a_grid_x[4];
-			float a_grid_y[4];
-
-			a_grid_x[0] = p.x - 0.5f*edge_length;
-			a_grid_x[1] = p.x + 0.5f*edge_length;
-			a_grid_x[2] = p.x + 1.0f*edge_length;
-			a_grid_x[3] = p.x + 0.5f*edge_length;
-
-			a_grid_y[0] = p.y - 0.866f*edge_length;
-			a_grid_y[1] = p.y - 0.866f*edge_length;
-			a_grid_y[2] = p.y;
-			a_grid_y[3] = p.y + 0.866f*edge_length;
-
-			{
-				float a_x[3];
-				float a_y[3];
-				float b_x[3];
-				float b_y[3];
-				int i, j;
-				int b_cursor_over_this_cell_stack;
-
-				/* mouse pos relative to centre position */
-				float mpxrc = io.MousePos.x - p.x;
-				float mpyrc = io.MousePos.y - p.y;
-
-				b_cursor_over_this_cell_stack =
-					(   p_hc != NULL
-					&&  p_hc->addr.x == cell_x
-					&&  p_hc->addr.y == cell_y
-					);
-
-				/* points in this cell */
-				a_x[0] = -k;
-				a_y[0] = (1.0f-0.866f*3.15470054f*1.366f)*k;
-				a_x[1] = 0.0;
-				a_y[1] = (1.0f-0.866f*3.15470054f*1.366f)*k;
-				a_x[2] = k;
-				a_y[2] = (1.0f-0.866f*3.15470054f*1.366f)*k;
-
-				/* points inside of the neighbouring cell */
-				b_x[0] = -k;
-				b_y[0] = (1.0f-0.866f*3.15470054f*1.366f-2)*k;
-				b_x[1] = 0.0;
-				b_y[1] = (1.0f-0.866f*3.15470054f*1.366f-2)*k;
-				b_x[2] = k;
-				b_y[2] = (1.0f-0.866f*3.15470054f*1.366f-2)*k;
-
-				for (i = 0; i < 3; i++) { /* for each of the three edges */
-					int             b_invalid_neighbour_addr;
-					int             b_cursor_over_neighbour_stack;
-					struct gridaddr neighbour_addr;
-					struct gridaddr cell_addr;
-
-					/* get information about the neighbour of this edge */
-					cell_addr.x = cell_x;
-					cell_addr.y = cell_y;
-					cell_addr.z = 0;
-					b_invalid_neighbour_addr = gridaddr_edge_neighbour(&neighbour_addr, &cell_addr, i);
-					b_cursor_over_neighbour_stack =
-						(   p_hc != NULL
-						&&  p_hc->addr.x == neighbour_addr.x
-						&&  p_hc->addr.y == neighbour_addr.y
-						);
-
-					/* logic for click operations for our cell */
-					for (j = 0; j < 3; j++) { /* for each layer of this edge... */
-						float xrc = mpxrc - (-k + j*k);
-						float yrc = mpyrc - (k - 0.866f*edge_length);
-						if  (   xrc > -touching_radius
-						    &&  xrc < touching_radius
-						    &&  (   (yrc > -k && yrc < 0.0f) /* in the square between the inner and outer hexagon edges */
-						        ||  xrc*xrc + yrc*yrc < touching_radius*touching_radius /* in the circular landing shape at the end of the hexagon */
-						        )
-						    &&  g.IO.MouseClicked[0]
-						    && !b_invalid_neighbour_addr
-						    ) {
-							struct gridcell *p_cell;
-							cell_addr.z      = j;
-							if ((p_cell = gridstate_get_gridcell(p_st, &cell_addr, 1)) != NULL) {
-								if (!gridcell_set_neighbour_edge_connection_type(p_cell, i, get_next_connection_type(gridcell_get_neighbour_edge_connection_type(p_cell, i))))
-									program_compile(p_prog, p_st);
-							}
-						}
-					}
-
-					/* logic for click operations for the neighbour cell */
-					for (j = 0; j < 3; j++) { /* for each layer of this edge... */
-						float xrc = mpxrc - (-k + j*k);
-						float yrc = mpyrc - (-k - 0.866f*edge_length);
-						if  (   xrc > -k*0.5f
-						    &&  xrc < k*0.5f
-						    &&  (   (yrc > 0.0 && yrc < k) /* in the square between the inner and outer hexagon edges */
-						        ||  xrc*xrc + yrc*yrc < k*k*0.25f /* in the circular landing shape at the end of the hexagon */
-						        )
-						    &&  g.IO.MouseClicked[0]
-						    && !b_invalid_neighbour_addr
-						    ) {
-							struct gridcell *p_neighbour;
-							int edge_id = get_opposing_edge_id(i);
-							neighbour_addr.z = j;
-							if ((p_neighbour = gridstate_get_gridcell(p_st, &neighbour_addr, 1)) != NULL) {
-								if (!gridcell_set_neighbour_edge_connection_type(p_neighbour, edge_id, get_next_connection_type(gridcell_get_neighbour_edge_connection_type(p_neighbour, edge_id))))
-									program_compile(p_prog, p_st);
-							}
-						}
-					}
-
-					/* rendering */
-					{
-						struct gridcell *ap_cell[NUM_LAYERS];
-						struct gridcell *ap_neighbours[NUM_LAYERS];
-						int              a_busted_edges[NUM_LAYERS];
-						int              a_grid_rgb[3];
-
-						for (j = 0; j < NUM_LAYERS; j++) {
-							cell_addr.z      = j;
-							neighbour_addr.z = j;
-							ap_cell[j]       = gridstate_get_gridcell(p_st, &cell_addr, 0);
-							ap_neighbours[j] = gridstate_get_gridcell(p_st, &neighbour_addr, 0);
-							a_busted_edges[j] = 0;
-						}
-
-						/* plot the actual grid line first. */
-						a_grid_rgb[0] = 192 + ((a_busted_edges[1]||a_busted_edges[2]) ? -64 : 32);
-						a_grid_rgb[1] = 192 + ((a_busted_edges[0]||a_busted_edges[2]) ? -64 : 32);
-						a_grid_rgb[2] = 192 + ((a_busted_edges[0]||a_busted_edges[1]) ? -64 : 32);
-						p_list->AddLine(ImVec2(a_grid_x[i], a_grid_y[i]), ImVec2(a_grid_x[i+1], a_grid_y[i+1]), ImColor(a_grid_rgb[0], a_grid_rgb[1], a_grid_rgb[2]), 2*edge_length/40);
-
-						for (j = 0; j < NUM_LAYERS; j++) { /* for each layer of this edge... */
-							struct gridcell *p_cell;
-							struct gridcell *p_neighbour;
-							cell_addr.z      = j;
-							neighbour_addr.z = j;
-							if  (   (p_cell = gridstate_get_gridcell(p_st, &cell_addr, 0)) != NULL
-							    &&  (p_neighbour = gridstate_get_gridcell(p_st, &neighbour_addr, 0)) != NULL
-							    ) {
-								int ctype = gridcell_get_edge_connection_type(p_cell, i);
-								int ntype = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(i));
-								int busted_edge = ((p_cell->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(i)) || (p_neighbour->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(i)));
-
-								ImU32 layer_colour = ImColor
-									(((j == 0) ? 196 : 128) - (busted_edge ? 64 : 0)
-									,((j == 1) ? 196 : 128) - (busted_edge ? 64 : 0)
-									,((j == 2) ? 196 : 128) - (busted_edge ? 64 : 0)
-									,255
-									);
-
-								float centre_x = p.x + a_x[j];
-								float centre_y = p.y + a_y[j];
-								if (ctype == EDGE_LAYER_CONNECTION_NET_CONNECTED) {
-									assert(ntype == EDGE_LAYER_CONNECTION_NET_CONNECTED);
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
-									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
-									assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
-									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
-									assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
-									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
-									assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
-									assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
-									p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(p.x + b_x[j], p.y + b_y[j]), layer_colour, r);
-								} else {
-									assert(ntype == EDGE_LAYER_CONNECTION_UNCONNECTED);
-									assert(ctype == EDGE_LAYER_CONNECTION_UNCONNECTED);
-								}
-
-
-
-							} else if (b_cursor_over_this_cell_stack || b_cursor_over_neighbour_stack) {
-								ImU32 layer_colour = ImColor
-									(((j == 0) ? 196 : 128)
-									,((j == 1) ? 196 : 128)
-									,((j == 2) ? 196 : 128)
-									,255
-									);
-
-								if (b_cursor_over_this_cell_stack) {
-									float centre_x = p.x + a_x[j];
-									float centre_y = p.y + a_y[j];
-									p_list->AddCircleFilled(ImVec2(centre_x, centre_y),         r, layer_colour, 17);
-								}
-								if (b_cursor_over_neighbour_stack) {
-									p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
-								}
-							}
-
-							vmpy(&(a_x[j]), &(a_y[j]), 0.5f, 0.866f);
-							vmpy(&(b_x[j]), &(b_y[j]), 0.5f, 0.866f);
-						}
-
-					}
-
-					/* rotate relative mouse position */
-					vmpy(&mpxrc, &mpyrc, 0.5f, -0.866f);
-				}
-
-
-
+			if (ctype == EDGE_LAYER_CONNECTION_NET_CONNECTED) {
+				assert(ntype == EDGE_LAYER_CONNECTION_NET_CONNECTED);
+				p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
+				p_list->AddCircleFilled(ImVec2(centre_nx, centre_ny), r, layer_colour, 17);
+				p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(centre_nx, centre_ny), layer_colour, r);
+			} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
+				assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
+				p_list->AddCircleFilled(ImVec2(centre_nx, centre_ny), r, layer_colour, 17);
+				p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(centre_nx, centre_ny), layer_colour, r);
+			} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+				assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
+				p_list->AddCircleFilled(ImVec2(centre_nx, centre_ny), r, layer_colour, 17);
+				p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(centre_nx, centre_ny), layer_colour, r);
+			} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
+				assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
+				p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
+				p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(centre_nx, centre_ny), layer_colour, r);
+			} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+				assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
+				p_list->AddCircleFilled(ImVec2(centre_x, centre_y), r, layer_colour, 17);
+				p_list->AddLine(ImVec2(centre_x, centre_y), ImVec2(centre_nx, centre_ny), layer_colour, r);
+			} else {
+				assert(ntype == EDGE_LAYER_CONNECTION_UNCONNECTED);
+				assert(ctype == EDGE_LAYER_CONNECTION_UNCONNECTED);
 			}
+		} else {
+#if 0
+					if (b_cursor_over_this_cell_stack || b_cursor_over_neighbour_stack) {
+						ImU32 layer_colour = ImColor
+							(((j == 0) ? 196 : 128)
+							,((j == 1) ? 196 : 128)
+							,((j == 2) ? 196 : 128)
+							,255
+							);
 
-			if (program_is_valid(p_prog)) {
-				program_run(p_prog);
-			}
+						if (b_cursor_over_this_cell_stack) {
+							float centre_x = p.x + a_x[j];
+							float centre_y = p.y + a_y[j];
+							p_list->AddCircleFilled(ImVec2(centre_x, centre_y),         r, layer_colour, 17);
+						}
+						if (b_cursor_over_neighbour_stack) {
+							p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
+						}
+					}
+#endif
+		}
+	}
+
+	/* 3) Draw status and cursor over stuff */
+
+
+
 
 
 #if 0
-			/* pointing upwards */
-			ImVec2 tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/3, inner_n1.y);
-			ImVec2 tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/6, inner_n1.y - (inner_n2.x - inner_n1.x)/4);
-			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2*edge_length/40);
-			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2*edge_length/40);
-
-			/* pointing downwards */
-			tmp1 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/3, inner_n1.y);
-			tmp2 = ImVec2(inner_n1.x + (inner_n2.x - inner_n1.x)/6, inner_n1.y + (inner_n2.x - inner_n1.x)/4);
-			p_list->AddLine(inner_n1,  tmp2,  ImColor(0, 0, 0, 256), 2*edge_length/40);
-			p_list->AddLine(tmp2,  tmp1,  ImColor(0, 0, 0, 256), 2*edge_length/40);
-#endif
-
-
 
 			struct gridaddr addr;
 			addr.x = cell_x;
@@ -1898,22 +1861,14 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					}
 				}
 
-
-
-			}
-
 #if 0
 			draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, -0.866f, radius);
 			draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, -0.433f, radius);
 			draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, +0.433f, radius);
 #endif
 
-			cell_x += 1;
-		} while (1);
+#endif
 
-		cell_y += 1;
-
-	} while (1);
 
 	p_list->PopClipRect();
 
@@ -1923,7 +1878,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
 		ImGui::Text
-			("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) edge=%d errors=%d layer=%d"
+			("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) errors=%d"
 			,p_state->mouse_down
 			,mprel.x
 			,mprel.y
@@ -1931,9 +1886,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			,(long)((int32_t)p_hc->addr.y) - 0x40000000
 			,p_hc->pos_in_cell.x
 			,p_hc->pos_in_cell.y
-			,p_hc->edge_idx
 			,errors
-			,p_hc->layer_idx
 			);
 
 		ImGui::PopTextWrapPos();
@@ -1946,19 +1899,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 int main(int argc, char **argv)
 {
-/*
-	int i;
-	for (i = 0; i < 10000000; i++) {
-		uint32_t x = rand();
-		uint32_t y = rand();
-		uint64_t id = gridaddr_to_id(x, y);
-		uint32_t rx, ry;
-		id_to_xy(id, &rx, &ry);
-		//printf("%llu,%u,%u,%u,%u\n", id, x, rx, y, ry);
-		if (rx != x || ry != y)
-			abort();
-	}
-*/
+
 #if 0
 	int i;
 	int directions[100];
