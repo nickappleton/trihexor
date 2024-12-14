@@ -1412,11 +1412,6 @@ static const float AA_INNER_EDGE_CENTRE_POINTS[3][2] =
 	,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
 	,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
 	};
-static const float AA_NEIGHBOUR_EDGE_CENTRE_POINTS[3][2] =
-	{{-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE, -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
-	,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
-	,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
-	};
 static const float AA_EDGE_ROTATORS[6][2] =
 	{{ 1.0f,  0.0f}
 	,{ 0.5f,  SQRT3_4}
@@ -1715,8 +1710,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 				float            r             = radius*(HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8);
 				float            ax            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 				float            ay            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1];
-				float            bx            = AA_NEIGHBOUR_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
-				float            by            = AA_NEIGHBOUR_EDGE_CENTRE_POINTS[p_edge_info->layer][1];
+				float            bx            = ax;
+				float            by            = ay - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE*2;
 				float            rx            = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
 				float            ry            = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
 				ImU32 layer_colour = ImColor
@@ -1725,6 +1720,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					,((p_edge_info->layer == 2) ? 196 : 128) - (b_busted_edge ? (int)(0.5f + (animation_frame_sin + 1.0)*48.0f) : 0)
 					,detail_alpha
 					);
+
+
 
 				vmpy(&ax, &ay, rx, ry);
 				vmpy(&bx, &by, rx, ry);
@@ -1790,8 +1787,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 		if (p_edge_info->b_mouse_over_either && detail_alpha > 0) {
 			float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 			float ay = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* small negative numbers */
-			float bx = AA_NEIGHBOUR_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
-			float by = AA_NEIGHBOUR_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* bigger negative numbers */
+			float bx = ax;
+			float by = ay - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE*2;
 			float rx = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
 			float ry = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
 			ImU32 layer_colour = ImColor
