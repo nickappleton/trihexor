@@ -213,7 +213,7 @@ struct gridcell {
 	 * part of a broken cycle. This is not ideal and it would be better to
 	 * have 6 bits which identify the edge instead of the cell itself and we
 	 * might change that later - for now, we have 32 bits for the net id.
-	 * 33    - COMPUTING
+	 * 33    - BUSY/BROKEN_NET
 	 * 34:39 - BROKEN_EDGE (N, NE, SE, NW, SW, S)
 	 * 40:63 - STORAGE_ID */
 
@@ -1050,13 +1050,14 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	/* At this point, if there are no broken nets, we could actually run the
 	 * program by evaluating the net stack backwards and examining the cells.
 	 * But now what we want to do is re-number our nets to be in order of
-	 * execution. We clear the busy flag for no real reason. */
+	 * execution. The busy bit now explicitly identifies if the cell is part
+	 * of a net in a cycle. */
 	{
 		size_t i;
 		for (i = 0; i < p_program->net_count; i++) {
 			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
 			uint32_t j;
-			uint64_t new_id_mask = GRIDCELL_PROGRAM_NET_ID_BITS_SET(i);
+			uint64_t new_id_mask = GRIDCELL_PROGRAM_NET_ID_BITS_SET(i) | (p_net->b_exists_in_a_cycle ? GRIDCELL_PROGRAM_BUSY_BIT : 0);
 			for (j = 0; j < p_net->cell_count; j++) {
 				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
 				struct gridcell *p_cell = (struct gridcell *)p_program->pp_stack[cell_idx];
@@ -1191,6 +1192,10 @@ struct plot_grid_state {
 	int    b_mouse_down_pos_changed;
 	ImVec2 mouse_down_pos;
 
+#if 0
+#define NUM_SNAKE_POINTS (2*2*2*2*2*3*5)
+	float aa_the_snake[NUM_SNAKE_POINTS][2];
+#endif
 
 };
 
@@ -1517,12 +1522,18 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	uint32_t animation_frame = ((glfw_ticks % glfw_ticks_per_sec) * 256 / glfw_ticks_per_sec);
 	float    animation_frame_sin = sinf(animation_frame * (float)(2.0*M_PI/256));
+	float    animation_frame_cos = cosf(animation_frame * (float)(2.0*M_PI/256));
 
-	int detail_alpha = (int)((radius - 10.0f)*25.0f);
+	int detail_alpha   = (int)((radius - 6.0f)*25.0f); /* at 16 it's fully visible, at 6 it's fully gone */
+	int overview_alpha = (int)((12 - radius)*43.0f);    /* at 6 it's fully visible, at 12 it's fully gone */
 	if (detail_alpha < 0)
 		detail_alpha = 0;
 	if (detail_alpha > 255)
 		detail_alpha = 255;
+	if (overview_alpha < 0)
+		overview_alpha = 0;
+	if (overview_alpha > 255)
+		overview_alpha = 255;
 
 	/* Figure out if the mouse has come down over this component. If so,
 	 * record the down position and clear the position-changed flag. We use
@@ -1652,78 +1663,42 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	while ((p_info = visible_cell_iterator_next(&iter)) != NULL) {
 		float            inner_radius = radius * 0.95f;
 		struct gridcell *p_cell_l0 = gridstate_get_gridcell(p_st, &(p_info->addr_l0), 0);
+		ImVec2           a_points[6];
 
-		int    b_busted_layers[3];
-		int    i;
-		int    num_busted_layers = 0;
-		int    num_split_segments;
-		ImU32  a_segment_colours[3];
-		ImVec2 a_points[6];
+		a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
+		a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+		a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+		a_points[3] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
+		a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+		a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+		p_list->AddConvexPolyFilled(a_points, 6, ImColor(255, 255, 255, 255));
 
-		/* TODO: use animation_frame to make a spinning thing... this thing looks garbage. */
-
-		a_segment_colours[0] = ImColor(255, 255, 255, 255);
-
-		for (i = 0; i < NUM_LAYERS; i++) {
-			b_busted_layers[i] =
-				(   p_cell_l0 != NULL
-				&&  CELL_WILL_GET_A_NET(p_cell_l0[i*256].data)
-				&& !program_is_valid(p_prog)
-				&&  p_prog->pp_netstack[p_prog->net_count-1-GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell_l0[i*256].data)]->b_exists_in_a_cycle
-				);
-			if (b_busted_layers[i]) {
-				a_segment_colours[num_busted_layers++] = ImColor
-					(255 - ((i == 1 || i == 2) ? 64 : 0)
-					,255 - ((i == 0 || i == 2) ? 64 : 0)
-					,255 - ((i == 0 || i == 1) ? 64 : 0)
-					,255
-					);
+		if (p_cell_l0 != NULL && !program_is_valid(p_prog)) {
+			int i;
+			int sp;
+			for (i = 0, sp = 0; i < NUM_LAYERS; i++) {
+				int j;
+				if (p_cell_l0[i*256].data & GRIDCELL_PROGRAM_BUSY_BIT) {
+					float sx, sy;
+					for (j = 0; j < 4; j++) {
+						sx = cosf((j+6*sp)*(float)(2*M_PI/18))*0.533f*radius;
+						sy = sinf((j+6*sp)*(float)(2*M_PI/18))*0.533f*radius;
+						vmpy(&sx, &sy, animation_frame_cos, animation_frame_sin);
+						p_list->AddCircleFilled
+							(ImVec2(p_info->centre_pixel_x + sx, p_info->centre_pixel_y + sy)
+							,radius*0.09f
+							,ImColor
+								(192 - ((i==1 || i==2) ? 64 : 0)
+								,192 - ((i==0 || i==2) ? 64 : 0)
+								,192 - ((i==0 || i==1) ? 64 : 0)
+								,detail_alpha
+								)
+							,17
+							);
+					}
+					sp++;
+				}
 			}
-		}
-
-		num_split_segments = (num_busted_layers) ? num_busted_layers : 1;
-
-		/* Draw a hexagon bits. */
-		/* 0,1,2,3,4,5
-		 *
-		 * 1,2,3,4   4,5,0,1
-		 * 
-		 * 0,1,2,c  2,3,4,c  4,5,0,c */
-		if (num_split_segments == 1) {
-			a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
-			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[3] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
-			a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			p_list->AddConvexPolyFilled(a_points, 6, a_segment_colours[0]);
-		} else if (num_split_segments == 2) {
-			a_points[0] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[1] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[2] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
-			a_points[3] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			p_list->AddConvexPolyFilled(a_points, 4, a_segment_colours[0]);
-			a_points[0] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[2] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
-			a_points[3] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			p_list->AddConvexPolyFilled(a_points, 4, a_segment_colours[1]);
-		} else {
-			a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
-			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[3] = ImVec2(p_info->centre_pixel_x,                     p_info->centre_pixel_y);
-			p_list->AddConvexPolyFilled(a_points, 4, a_segment_colours[0]);
-			a_points[0] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
-			a_points[1] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
-			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[3] = ImVec2(p_info->centre_pixel_x,                     p_info->centre_pixel_y);
-			p_list->AddConvexPolyFilled(a_points, 4, a_segment_colours[1]);
-			a_points[0] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
-			a_points[2] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
-			a_points[3] = ImVec2(p_info->centre_pixel_x,                     p_info->centre_pixel_y);
-			p_list->AddConvexPolyFilled(a_points, 4, a_segment_colours[2]);
 		}
 	}
 
@@ -1875,21 +1850,36 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 						p_list->AddCircleFilled(ImVec2(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y), radius*0.433f, ImColor(160, 160, 160, (detail_alpha*64)/256), 17);
 				}
 			}
-
-
 		}
 
+		/* only do this on the very last edge and layer of this address. We're
+		 * pooing pixels on top of everything. */
+		if (overview_alpha > 0 && p_edge_info->edge == 2 && p_edge_info->layer == 2) {
+			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
+			if (p_cell != NULL) {
+				int i;
+				int b_busted;
+				int b_interesting;
 
+				for (i = 0; i < NUM_LAYERS && ((p_cell - i*256)->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0; i++);
+				b_busted      = (i != NUM_LAYERS);
 
+				for (i = 0; i < NUM_LAYERS && CELL_WILL_GET_A_NET((p_cell - i*256)->data) == 0; i++);
+				b_interesting = (i != NUM_LAYERS);
 
-
-
-
-
-
-
-
-
+				if (b_interesting || b_busted) {
+					float            inner_radius = radius * 0.95f;
+					ImVec2           a_points[6];
+					a_points[0] = ImVec2(p_edge_info->centre_pixel_x - inner_radius,      p_edge_info->centre_pixel_y);
+					a_points[1] = ImVec2(p_edge_info->centre_pixel_x - 0.5f*inner_radius, p_edge_info->centre_pixel_y - SQRT3_4*inner_radius);
+					a_points[2] = ImVec2(p_edge_info->centre_pixel_x + 0.5f*inner_radius, p_edge_info->centre_pixel_y - SQRT3_4*inner_radius);
+					a_points[3] = ImVec2(p_edge_info->centre_pixel_x + inner_radius,      p_edge_info->centre_pixel_y);
+					a_points[4] = ImVec2(p_edge_info->centre_pixel_x + 0.5f*inner_radius, p_edge_info->centre_pixel_y + SQRT3_4*inner_radius);
+					a_points[5] = ImVec2(p_edge_info->centre_pixel_x - 0.5f*inner_radius, p_edge_info->centre_pixel_y + SQRT3_4*inner_radius);
+					p_list->AddConvexPolyFilled(a_points, 6, b_busted ? ImColor(192, 64, 64, overview_alpha) : ImColor(160, 160, 160, overview_alpha));
+				}
+			}
+		}
 	}
 
 
@@ -2089,6 +2079,79 @@ int main(int argc, char **argv)
 	plot_state.bl_x = 0x40000000ull*65536;
 	plot_state.bl_y = 0x40000000ull*65536;
 	plot_state.mouse_down = 0;
+
+#if 0
+	/* build snek - todo: do it better
+	 *
+	 * three snakes could be active at any given time.
+	 * each one should be maybe 80 degrees? idk - knob twiddle till it looks good, right?
+	 * 
+	 * UPDATE: was a nice idea but i can't figure out how to make this thing
+	 * get filled. it is not convex. idek... */
+	{
+		/* figure out a good arc length */
+		float angle_rads = (float)(2*M_PI/4);
+		float r_short = 0.45f;
+
+		/* derive r2 such that the snake lies on the radius 1.0f */
+		float r_long = 0.65f;
+
+		/* radius of each end disc */
+		float r_end_disc = (r_long - r_short)*0.5f;
+
+		/* radius of the centre ring */
+		float r_centre = (r_long + r_short)*0.5f;
+
+		/* compute the various parts of circumference */
+		float short_arc_segment_length = r_short*angle_rads;
+		float long_arc_segment_length  = r_long*angle_rads;
+		float end_segment_length       = ((float)M_PI)*r_end_disc;
+
+		/* find the total circumference. */
+		float total_circumference = 2.0f*end_segment_length + short_arc_segment_length + long_arc_segment_length;
+
+		/* point allocation for each segment */
+		int points_per_end_segment  = (int)(NUM_SNAKE_POINTS*end_segment_length/total_circumference + 0.5f);
+		int points_on_short_segment = (int)(NUM_SNAKE_POINTS*short_arc_segment_length/total_circumference + 0.5f);
+		int points_on_long_segment  = NUM_SNAKE_POINTS - 2*points_per_end_segment - points_on_short_segment;
+
+		/* find end position */
+		float  rx   = cosf(angle_rads);
+		float  ry   = sinf(angle_rads);
+		float *p_dp = &(plot_state.aa_the_snake[0][0]);
+
+		int i;
+
+		/* build long segments starting at 1.0, 0.0 */
+		for (i = 0; i < points_on_long_segment; i++) {
+			*p_dp++ = r_long*cosf(i*angle_rads/points_on_long_segment);
+			*p_dp++ = r_long*sinf(i*angle_rads/points_on_long_segment);
+		}
+
+		/* build first cap */
+		for (i = 0; i < points_per_end_segment; i++) {
+			float dx = r_centre + r_end_disc*cosf(i*((float)M_PI)/points_per_end_segment);
+			float dy =            r_end_disc*sinf(i*((float)M_PI)/points_per_end_segment);
+			vmpy(&dx, &dy, rx, ry);
+			*p_dp++ = dx;
+			*p_dp++ = dy;
+		}
+
+		/* build short segment */
+		for (i = 0; i < points_on_short_segment; i++) {
+			*p_dp++ = r_short*cosf((points_on_short_segment-1-i)*angle_rads/points_on_short_segment);
+			*p_dp++ = r_short*sinf((points_on_short_segment-1-i)*angle_rads/points_on_short_segment);
+		}
+
+		/* build last cap */
+		for (i = 0; i < points_per_end_segment; i++) {
+			float dx = r_centre - r_end_disc*cosf(i*((float)M_PI)/points_per_end_segment);
+			float dy =           -r_end_disc*sinf(i*((float)M_PI)/points_per_end_segment);
+			*p_dp++ = dx;
+			*p_dp++ = dy;
+		}
+	}
+#endif
 
 	struct program prog;
 	program_init(&prog);
