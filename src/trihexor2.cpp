@@ -471,6 +471,8 @@ struct program_net {
 	uint32_t current_solve_edge;
 	uint32_t b_currently_in_solve_stack;
 	uint32_t b_exists_in_a_cycle;
+	uint32_t serial_gates;
+	uint32_t gate_fanout;
 
 };
 
@@ -853,10 +855,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			uint64_t            net_id                       = p_program->net_count; /* must be read before calling program_net_push() */
 			uint64_t            compute_flag_and_net_id_bits = GRIDCELL_PROGRAM_BUSY_BIT | GRIDCELL_PROGRAM_NET_ID_BITS_SET(net_id);
 			struct program_net *p_net                        = program_net_push(p_program);
-			p_net->net_id    = net_id;
+			p_net->net_id                     = net_id;
 			p_net->b_currently_in_solve_stack = 0;
-			p_net->first_cell_stack_index = group_pos;
-			p_net->b_exists_in_a_cycle = 0;
+			p_net->first_cell_stack_index     = group_pos;
+			p_net->b_exists_in_a_cycle        = 0;
+			p_net->serial_gates               = 0;
+			p_net->gate_fanout                = 0;
 			/* Initialise the state such that on the first increment, we will
 			 * move to cell 0, edge 0. */
 			p_net->current_solve_cell = (uint32_t)-1;
@@ -1109,6 +1113,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			uint32_t j;
 			uint32_t num_sources = 0;
 			uint32_t *p_code_start = program_code_reserve(p_program);
+			uint32_t fanout = 0;
 			assert(p_net->net_id == i);
 			for (j = 0; j < p_net->cell_count; j++) {
 				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
@@ -1120,6 +1125,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 					if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED || edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 						struct gridcell *p_neighbour         = gridcell_get_edge_neighbour(p_cell, k, 0);
 						uint32_t         neighbour_net       = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_neighbour->data);
+						if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
+							uint32_t min_serial_sources = p_program->pp_netstack[p_program->net_count-1-neighbour_net]->serial_gates + 1;
+							if (p_net->serial_gates < min_serial_sources) {
+								p_net->serial_gates = min_serial_sources;
+							}
+						}
 						assert(gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k)) == EDGE_LAYER_CONNECTION_SENDS);
 						if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 							assert(neighbour_net < i);
@@ -1130,10 +1141,13 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 							*(program_code_reserve(p_program)) = (1ull << 24) | neighbour_net;
 						}
 						num_sources++;
+					} else if (edge_type == EDGE_LAYER_CONNECTION_SENDS) {
+						fanout++;
 					}
 				}
-				*p_code_start = num_sources;
+				*p_code_start      = num_sources;
 			}
+			p_net->gate_fanout = fanout;
 		}
 
 		/* clear states ready for processing. */
@@ -1576,6 +1590,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	struct layer_edge_iterator      edge_iter;
 	const struct layer_edge_info   *p_edge_info;
 
+	const struct gridcell          *p_hovered_cell = NULL;
+
 	int b_real_click_occured = 0;
 
 	uint64_t glfw_ticks = glfwGetTimerValue();
@@ -1868,12 +1884,18 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			int i;
 			ImVec2 a_points[34];
 			for (i = 0; i < 17; i++) {
-				float arch_cos = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*cosf(i * ((float)M_PI) / 16.0f);
-				float arch_sin = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*sinf(i * ((float)M_PI) / 16.0f);
+				float arch_cos = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*cosf(i*((float)M_PI)/16.0f);
+				float arch_sin = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*sinf(i*((float)M_PI)/16.0f);
 				a_points[i]    = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, ax + arch_cos, ay + arch_sin, rx, ry);
 				a_points[i+17] = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, bx - arch_cos, by - arch_sin, rx, ry);
 			}
 			p_list->AddConvexPolyFilled(a_points, 34, layer_colour);
+
+			if (p_edge_info->b_mouse_in_addr) {
+				p_hovered_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
+			} else {
+				p_hovered_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr_other), 0);
+			}
 		}
 
 		if (p_edge_info->edge == 0) {
@@ -1953,12 +1975,21 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	p_list->PopClipRect();
 
 #if 1
-	if (ImGui::IsItemHovered())
-	{
+	if (ImGui::IsItemHovered() && g.IO.KeyCtrl) {
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
-		ImGui::Text("animation frame=%d", animation_frame);
+		if (p_hovered_cell && program_is_valid(p_prog) && CELL_WILL_GET_A_NET(p_hovered_cell->data)) {
+			uint32_t net_id = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_hovered_cell->data);
+			assert(net_id < p_prog->net_count);
+			ImGui::Text("Net ID            %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->net_id);
+			ImGui::Text("Net serial factor %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->serial_gates);
+			ImGui::Text("Net gate fanout   %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->gate_fanout);
+
+		}
+
+
+
 
 #if 0
 		ImGui::Text
@@ -2138,79 +2169,6 @@ int main(int argc, char **argv)
 	plot_state.bl_x = 0x40000000ull*65536;
 	plot_state.bl_y = 0x40000000ull*65536;
 	plot_state.mouse_down = 0;
-
-#if 0
-	/* build snek - todo: do it better
-	 *
-	 * three snakes could be active at any given time.
-	 * each one should be maybe 80 degrees? idk - knob twiddle till it looks good, right?
-	 * 
-	 * UPDATE: was a nice idea but i can't figure out how to make this thing
-	 * get filled. it is not convex. idek... */
-	{
-		/* figure out a good arc length */
-		float angle_rads = (float)(2*M_PI/4);
-		float r_short = 0.45f;
-
-		/* derive r2 such that the snake lies on the radius 1.0f */
-		float r_long = 0.65f;
-
-		/* radius of each end disc */
-		float r_end_disc = (r_long - r_short)*0.5f;
-
-		/* radius of the centre ring */
-		float r_centre = (r_long + r_short)*0.5f;
-
-		/* compute the various parts of circumference */
-		float short_arc_segment_length = r_short*angle_rads;
-		float long_arc_segment_length  = r_long*angle_rads;
-		float end_segment_length       = ((float)M_PI)*r_end_disc;
-
-		/* find the total circumference. */
-		float total_circumference = 2.0f*end_segment_length + short_arc_segment_length + long_arc_segment_length;
-
-		/* point allocation for each segment */
-		int points_per_end_segment  = (int)(NUM_SNAKE_POINTS*end_segment_length/total_circumference + 0.5f);
-		int points_on_short_segment = (int)(NUM_SNAKE_POINTS*short_arc_segment_length/total_circumference + 0.5f);
-		int points_on_long_segment  = NUM_SNAKE_POINTS - 2*points_per_end_segment - points_on_short_segment;
-
-		/* find end position */
-		float  rx   = cosf(angle_rads);
-		float  ry   = sinf(angle_rads);
-		float *p_dp = &(plot_state.aa_the_snake[0][0]);
-
-		int i;
-
-		/* build long segments starting at 1.0, 0.0 */
-		for (i = 0; i < points_on_long_segment; i++) {
-			*p_dp++ = r_long*cosf(i*angle_rads/points_on_long_segment);
-			*p_dp++ = r_long*sinf(i*angle_rads/points_on_long_segment);
-		}
-
-		/* build first cap */
-		for (i = 0; i < points_per_end_segment; i++) {
-			float dx = r_centre + r_end_disc*cosf(i*((float)M_PI)/points_per_end_segment);
-			float dy =            r_end_disc*sinf(i*((float)M_PI)/points_per_end_segment);
-			vmpy(&dx, &dy, rx, ry);
-			*p_dp++ = dx;
-			*p_dp++ = dy;
-		}
-
-		/* build short segment */
-		for (i = 0; i < points_on_short_segment; i++) {
-			*p_dp++ = r_short*cosf((points_on_short_segment-1-i)*angle_rads/points_on_short_segment);
-			*p_dp++ = r_short*sinf((points_on_short_segment-1-i)*angle_rads/points_on_short_segment);
-		}
-
-		/* build last cap */
-		for (i = 0; i < points_per_end_segment; i++) {
-			float dx = r_centre - r_end_disc*cosf(i*((float)M_PI)/points_per_end_segment);
-			float dy =           -r_end_disc*sinf(i*((float)M_PI)/points_per_end_segment);
-			*p_dp++ = dx;
-			*p_dp++ = dy;
-		}
-	}
-#endif
 
 	struct program prog;
 	program_init(&prog);
