@@ -872,7 +872,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 					}
 
 					//float yp = gpy*SQRT3_4;
-					//float xp = (2*gpx + (gpy&1))*1.5f;
+					//float xp = (2*gpx + (gpy&1))*1.5f; hex_area=3*sqrt(3)/2, box_area=2*sqrt(3)  hex_area/box_area=3/4
 
 					stacked_cell_count++;
 				}
@@ -881,7 +881,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 
 		/* store statistics */
 		p_program->stacked_cell_count = stacked_cell_count;
-		p_program->substrate_area     = stacked_cell_count ? ((2 + max_y - min_y)*(uint64_t)(2 + max_x - min_x)) : 0;
+		p_program->substrate_area     = stacked_cell_count ? ((2 + max_y - min_y)*(uint64_t)(4 + 3*max_x - 3*min_x)) : 0; /* scale by for box area SQRT3_4*0.5  */
 
 		/* note to future self - DO NOT CALL program_stack_push after this
 		 * it could change the base pointer of pp_stack. */
@@ -2278,8 +2278,13 @@ int main(int argc, char **argv)
 		ImGui::SameLine();
 		ImGui::BeginGroup();
 		ImGui::Text("The grid contains %lu used cells", (unsigned long)prog.stacked_cell_count);
-		if (prog.stacked_cell_count)
-			ImGui::Text("Substrate area %f", (float)(prog.substrate_area * 0.25f));
+		if (prog.stacked_cell_count) {
+			float box_area = prog.substrate_area*(SQRT3_4*0.5f);
+			float hex_area = prog.stacked_cell_count*(3*SQRT3_4);
+			ImGui::Text("Substrate area   %f pm", (float)box_area);
+			ImGui::Text("Used cell area   %f pm", (float)hex_area);
+			ImGui::Text("Cell utilisation %f %%", (float)(prog.stacked_cell_count*600.0f/prog.substrate_area));
+		}
 
 		if (!program_is_valid(&prog)) {
 			ImGui::Text("The grid has a loop!");
