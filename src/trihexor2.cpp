@@ -511,6 +511,11 @@ struct program {
 	size_t               stack_count;
 	size_t               stack_alloc_count;
 
+	/* Statistics */
+	size_t               stacked_cell_count; /* available on failed build */
+	uint64_t             substrate_area; /* available on failed build */
+	uint32_t             worst_logic_chain; /* available only if program valid */
+
 };
 
 
@@ -676,9 +681,12 @@ static void program_init(struct program *p_program) {
 	p_program->stack_alloc_count = 0;
 	p_program->net_alloc_count   = 0;
 
-	p_program->code_count  = 0;
-	p_program->stack_count = 0;
-	p_program->net_count   = 0;
+	p_program->code_count         = 0;
+	p_program->stack_count        = 0;
+	p_program->net_count          = 0;
+	p_program->stacked_cell_count = 0;
+	p_program->substrate_area     = 0;
+	p_program->worst_logic_chain  = 0;
 
 	(void)program_net_push(p_program);
 
@@ -773,6 +781,9 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
 	}
 }
 
+#define SQRT3   (1.732050807568877f)
+#define SQRT3_4 (SQRT3*0.5f)
+
 #define PROGRAM_DEBUG (0)
 
 /* After calling program_compile, the upper 32 bits of each cell's data
@@ -786,9 +797,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	struct gridcell **pp_list_base;
 	int               num_broken_nets = 0;
 
-	p_program->stack_count = 0;
-	p_program->net_count   = 0;
-	p_program->code_count  = 0;
+	p_program->stack_count        = 0;
+	p_program->net_count          = 0;
+	p_program->code_count         = 0;
+	p_program->stacked_cell_count = 0;
+	p_program->substrate_area     = 0;
+	p_program->worst_logic_chain  = 0;
 
 	/* no nodes, no problems. */
 	if (p_gridstate->p_root == NULL)
@@ -815,22 +829,59 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	/* 2) push all used grid-cells onto the list. set their net id to the
 	 * position in the list and clear the compute bit. */
 	{
-		size_t i;
+		size_t    i;
+		size_t    stacked_cell_count = 0;
+		uint32_t  min_x = 0;
+		uint32_t  max_x = 0;
+		uint32_t  min_y = 0;
+		uint32_t  max_y = 0;
 		for (num_cells = 0, i = 0; i < num_grid_pages; i++) {
 			struct gridpage *p_gp = (struct gridpage *)p_program->pp_stack[i];
 			int j;
-			for (j = 0; j < PAGE_XY_NB*PAGE_XY_NB*NUM_LAYERS; j++) {
-				if (!CELL_WILL_GET_A_NET(p_gp->data[j].data))
-					continue;
+			for (j = 0; j < PAGE_XY_NB*PAGE_XY_NB; j++) {
+				int      l;
+				size_t   num_cells_start = num_cells;
+
 				/* Clear all upper bits related to program development and
 				 * then set the net ID to be the index of the cell in the
 				 * list. We need it to be this for the next step. */
-				p_gp->data[j].data &= ~GRIDCELL_PROGRAM_BITS;
-				p_gp->data[j].data |= GRIDCELL_PROGRAM_NET_ID_BITS_SET(num_cells);
-				num_cells++;
-				program_stack_push(p_program, &(p_gp->data[j]));
+				for (l = 0; l < 3; l++) {
+					int addr = j+l*PAGE_XY_NB*PAGE_XY_NB;
+					if (CELL_WILL_GET_A_NET(p_gp->data[addr].data)) {
+						p_gp->data[addr].data &= ~GRIDCELL_PROGRAM_BITS;
+						p_gp->data[addr].data |= GRIDCELL_PROGRAM_NET_ID_BITS_SET(num_cells);
+						num_cells++;
+						program_stack_push(p_program, &(p_gp->data[addr]));
+					}
+				}
+
+				if (num_cells_start != num_cells) {
+					uint32_t gpx   = p_gp->position.x | (j & PAGE_XY_MASK);
+					uint32_t gpy   = p_gp->position.y |  ((j >> PAGE_XY_BITS) & PAGE_XY_MASK);
+					uint32_t xfrmx = 2*gpx + (gpy&1);
+					if (stacked_cell_count == 0) {
+						min_x = xfrmx;
+						max_x = xfrmx;
+						min_y = gpy;
+						max_y = gpy;
+					} else {
+						min_x = (min_x < xfrmx) ? min_x : xfrmx;
+						max_x = (max_x > xfrmx) ? max_x : xfrmx;
+						min_y = (min_y < gpy) ? min_y : gpy;
+						max_y = (max_y > gpy) ? max_y : gpy;
+					}
+
+					//float yp = gpy*SQRT3_4;
+					//float xp = (2*gpx + (gpy&1))*1.5f;
+
+					stacked_cell_count++;
+				}
 			}
 		}
+
+		/* store statistics */
+		p_program->stacked_cell_count = stacked_cell_count;
+		p_program->substrate_area     = stacked_cell_count ? ((2 + max_y - min_y)*(uint64_t)(2 + max_x - min_x)) : 0;
 
 		/* note to future self - DO NOT CALL program_stack_push after this
 		 * it could change the base pointer of pp_stack. */
@@ -1126,9 +1177,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 						struct gridcell *p_neighbour         = gridcell_get_edge_neighbour(p_cell, k, 0);
 						uint32_t         neighbour_net       = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_neighbour->data);
 						if (edge_type == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
-							uint32_t min_serial_sources = p_program->pp_netstack[p_program->net_count-1-neighbour_net]->serial_gates + 1;
-							if (p_net->serial_gates < min_serial_sources) {
-								p_net->serial_gates = min_serial_sources;
+							uint32_t serial_gate_count = p_program->pp_netstack[p_program->net_count-1-neighbour_net]->serial_gates + 1;
+							if (serial_gate_count > p_net->serial_gates) {
+								p_net->serial_gates = serial_gate_count;
+							}
+							if (serial_gate_count > p_program->worst_logic_chain) {
+								p_program->worst_logic_chain = serial_gate_count;
 							}
 						}
 						assert(gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(k)) == EDGE_LAYER_CONNECTION_SENDS);
@@ -1190,9 +1244,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 }
 
 #include "imgui_internal.h"
-
-#define SQRT3   (1.732050807568877f)
-#define SQRT3_4 (SQRT3*0.5f)
 
 ImVec2 iv2_add(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
 ImVec2 iv2_sub(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
@@ -1590,6 +1641,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	struct layer_edge_iterator      edge_iter;
 	const struct layer_edge_info   *p_edge_info;
 
+	struct gridaddr                 hovered_addr;
 	const struct gridcell          *p_hovered_cell = NULL;
 
 	int b_real_click_occured = 0;
@@ -1603,6 +1655,11 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 	int detail_alpha   = (int)((radius - 6.0f)*25.0f); /* at 16 it's fully visible, at 6 it's fully gone */
 	int overview_alpha = (int)((12 - radius)*43.0f);    /* at 6 it's fully visible, at 12 it's fully gone */
+
+	hovered_addr.x = 0;
+	hovered_addr.y = 0;
+	hovered_addr.z = 0;
+
 	if (detail_alpha < 0)
 		detail_alpha = 0;
 	if (detail_alpha > 255)
@@ -1700,6 +1757,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 				struct gridcell *p_cell_l0 = gridstate_get_gridcell(p_st, &(p_info->addr_l0), 0);
 				if (p_cell_l0 != NULL) {
 					int i, j;
+					gridcell_are_layers_fused_set(p_cell_l0, 0);
 					for (j = 0; j < NUM_LAYERS; j++) {
 						for (i = 0; i < EDGE_DIR_NUM; i++) {
 							if (gridcell_get_edge_neighbour(p_cell_l0 + 256*j, i, 0) != NULL) {
@@ -1867,6 +1925,10 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 	/* 3) Draw status and cursor over stuff */
 	layer_edge_iterator_init(&edge_iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
 	while ((p_edge_info = layer_edge_iterator_next(&edge_iter)) != NULL) {
+		if (p_edge_info->b_mouse_in_addr) {
+			hovered_addr = p_edge_info->addr;
+		}
+
 		/* Render edge connector hovers */
 		if (p_edge_info->b_mouse_over_either && detail_alpha > 0) {
 			float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
@@ -1979,31 +2041,16 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
-		if (p_hovered_cell && program_is_valid(p_prog) && CELL_WILL_GET_A_NET(p_hovered_cell->data)) {
+		ImGui::Text("Address (%ld, %ld)", (long)((int32_t)hovered_addr.x) - (long)0x40000000, (long)((int32_t)hovered_addr.y) - (long)0x40000000);
+
+		if (p_hovered_cell != NULL && program_is_valid(p_prog) && CELL_WILL_GET_A_NET(p_hovered_cell->data)) {
 			uint32_t net_id = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_hovered_cell->data);
 			assert(net_id < p_prog->net_count);
 			ImGui::Text("Net ID            %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->net_id);
 			ImGui::Text("Net serial factor %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->serial_gates);
 			ImGui::Text("Net gate fanout   %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->gate_fanout);
-
 		}
 
-
-
-
-#if 0
-		ImGui::Text
-			("down=%d (lda=%f,%f) snap=(%ld,%ld) cell=(%f,%f) errors=%d"
-			,p_state->mouse_down
-			,mprel.x
-			,mprel.y
-			,(long)((int32_t)p_hc->addr.x) - 0x40000000
-			,(long)((int32_t)p_hc->addr.y) - 0x40000000
-			,p_hc->pos_in_cell.x
-			,p_hc->pos_in_cell.y
-			,errors
-			);
-#endif
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
@@ -2226,24 +2273,33 @@ int main(int argc, char **argv)
 			ImGui::End();
 		}
 
-
 		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
 		plot_grid(&gs, &plot_state, &prog);
-		if (gs.stats_ok) {
-			int64_t width = gs.stats.max_x - (int64_t)gs.stats.min_x + 1;
-			int64_t height = gs.stats.max_y - (int64_t)gs.stats.min_y + 1;
-			ImGui::SameLine();
-			ImGui::BeginGroup();
-			ImGui::Text("Grid Width: %lld", (long long)width);
-			ImGui::Text("Grid Height: %lld", (long long)height);
-			ImGui::Text("Grid Area: %lld", (long long)width*height);
-			ImGui::Text("Total Cells: %ld", (long)gs.stats.num_cells);
-			ImGui::Text("Area Efficiency %f", gs.stats.num_cells*100.0f/(float)(width*height));
-			ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
-			ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
-			ImGui::EndGroup();
+		ImGui::SameLine();
+		ImGui::BeginGroup();
+		ImGui::Text("The grid contains %lu used cells", (unsigned long)prog.stacked_cell_count);
+		if (prog.stacked_cell_count)
+			ImGui::Text("Substrate area %f", (float)(prog.substrate_area * 0.25f));
 
+		if (!program_is_valid(&prog)) {
+			ImGui::Text("The grid has a loop!");
+		} else if (prog.net_count == 0) {
+			ImGui::Text("The grid has no nets assigned to it!");
+		} else {
+			ImGui::Text("The grid contains %lu nets", (unsigned long)prog.net_count);
+			ImGui::Text("The longest chain of operations is %lu", (unsigned long)prog.worst_logic_chain);
+
+			// int64_t width = gs.stats.max_x - (int64_t)gs.stats.min_x + 1;
+			// int64_t height = gs.stats.max_y - (int64_t)gs.stats.min_y + 1;
+			// ImGui::Text("Grid Width: %lld", (long long)width);
+			// ImGui::Text("Grid Height: %lld", (long long)height);
+			// ImGui::Text("Grid Area: %lld", (long long)width*height);
+			// ImGui::Text("Total Cells: %ld", (long)gs.stats.num_cells);
+			// ImGui::Text("Area Efficiency %f", gs.stats.num_cells*100.0f/(float)(width*height));
+			// ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
+			// ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
 		}
+		ImGui::EndGroup();
 		ImGui::End();
 
 		// Rendering
