@@ -1422,6 +1422,9 @@ static const float AA_INNER_EDGE_CENTRE_POINTS[3][2] =
 	,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
 	,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
 	};
+
+static const float AA_NEIGHBOUR_CENTRE_OFFSETS[3][2] = {{0.0f, -SQRT3}, {1.5f, -SQRT3_4}, {1.5f, SQRT3_4}};
+
 static const float AA_EDGE_ROTATORS[6][2] =
 	{{ 1.0f,  0.0f}
 	,{ 0.5f,  SQRT3_4}
@@ -1481,6 +1484,59 @@ const struct layer_edge_info *layer_edge_iterator_next(struct layer_edge_iterato
 		}
 	} while (1);
 	return NULL;
+}
+
+static
+void
+draw_inverted_delayed_arrow
+	(float centre_x, float centre_y, float pre_offset_x, float scale_rotate_x, float scale_rotate_y, ImU32 colour) {
+	float       ay = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       by = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
+	ImVec2      a_points[19];
+	int         i;
+	ImDrawList *p_list = ImGui::GetWindowDrawList();
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	for (i = 0; i < 17; i++) {
+		float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
+		float arch_sin = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*sinf(i * ((float)M_PI) / 16.0f);
+		a_points[i+1]  = imvec2_cmac(centre_x, centre_y, pre_offset_x + arch_cos, ay + arch_sin, scale_rotate_x, scale_rotate_y);
+	}
+	a_points[i+1] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	p_list->AddConvexPolyFilled(a_points, 19, colour);
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x,      by - tr,      scale_rotate_x, scale_rotate_y);
+	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
+	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
+	p_list->AddConvexPolyFilled(a_points, 3, colour);
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
+	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[3] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
+	p_list->AddConvexPolyFilled(a_points, 4, colour);
+}
+
+
+static
+void
+draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float scale_rotate_x, float scale_rotate_y, ImU32 colour) {
+	float       ay = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       by = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
+	ImVec2      a_points[19];
+	int         i;
+	ImDrawList *p_list = ImGui::GetWindowDrawList();
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
+	for (i = 0; i < 17; i++) {
+		float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
+		float arch_sin = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*sinf(i * ((float)M_PI) / 16.0f);
+		a_points[i+1]  = imvec2_cmac(centre_x, centre_y, pre_offset_x + arch_cos, ay + arch_sin, scale_rotate_x, scale_rotate_y);
+	}
+	a_points[i+1] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
+	p_list->AddConvexPolyFilled(a_points, 19, colour);
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x,      by - tr,      scale_rotate_x, scale_rotate_y);
+	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
+	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
+	p_list->AddConvexPolyFilled(a_points, 3, colour);
 }
 
 
@@ -1716,7 +1772,6 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 				int              ctype         = gridcell_get_edge_connection_type(p_cell, p_edge_info->edge);
 				int              ntype         = gridcell_get_edge_connection_type(p_neighbour, get_opposing_edge_id(p_edge_info->edge));
 				int              b_busted_edge = ((p_cell->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(p_edge_info->edge)) || (p_neighbour->data & GRIDCELL_PROGRAM_BROKEN_BIT_MASK(get_opposing_edge_id(p_edge_info->edge))));
-				float            r             = radius*(HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8);
 				float            ax            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 				float            ay            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1];
 				float            bx            = ax;
@@ -1734,54 +1789,61 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 					,(p_edge_info->layer == 2) ? selected_intensity : unselected_intensity
 					,detail_alpha
 					);
-				ImVec2 pa = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, ax, ay, rx, ry);
-				ImVec2 pb = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, bx, by, rx, ry);
 
 				if (ctype == EDGE_LAYER_CONNECTION_NET_CONNECTED) {
-					assert(ntype == EDGE_LAYER_CONNECTION_NET_CONNECTED);
-					p_list->AddCircleFilled(pa, r, layer_colour, 17);
-					p_list->AddCircleFilled(pb, r, layer_colour, 17);
-					p_list->AddLine(pa, pb, layer_colour, r);
+					ImVec2 a_points[34];
+					int i;
+					for (i = 0; i < 17; i++) {
+						float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
+						float arch_sin = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f)*sinf(i * ((float)M_PI) / 16.0f);
+						a_points[i]    = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, ax + arch_cos, ay + arch_sin, rx, ry);
+						a_points[i+17] = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, bx - arch_cos, by - arch_sin, rx, ry);
+					}
+					p_list->AddConvexPolyFilled(a_points, 34, layer_colour);
 				} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
 					assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
-					p_list->AddCircleFilled(pb, r, layer_colour, 17);
-					p_list->AddLine(pa, pb, layer_colour, r);
+					draw_inverted_delayed_arrow
+						(p_edge_info->centre_pixel_x + radius*AA_NEIGHBOUR_CENTRE_OFFSETS[p_edge_info->edge][0]
+						,p_edge_info->centre_pixel_y + radius*AA_NEIGHBOUR_CENTRE_OFFSETS[p_edge_info->edge][1]
+						,AA_INNER_EDGE_CENTRE_POINTS[2-p_edge_info->layer][0]
+						,-rx
+						,-ry
+						,layer_colour
+						);
 				} else if (ctype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 					assert(ntype == EDGE_LAYER_CONNECTION_SENDS);
-					p_list->AddCircleFilled(pb, r, layer_colour, 17);
-					p_list->AddLine(pa, pb, layer_colour, r);
+					draw_inverted_arrow
+						(p_edge_info->centre_pixel_x + radius*AA_NEIGHBOUR_CENTRE_OFFSETS[p_edge_info->edge][0]
+						,p_edge_info->centre_pixel_y + radius*AA_NEIGHBOUR_CENTRE_OFFSETS[p_edge_info->edge][1]
+						,AA_INNER_EDGE_CENTRE_POINTS[2-p_edge_info->layer][0]
+						,-rx
+						,-ry
+						,layer_colour
+						);
 				} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED) {
 					assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
-					p_list->AddCircleFilled(pa, r, layer_colour, 17);
-					p_list->AddLine(pa, pb, layer_colour, r);
+					draw_inverted_delayed_arrow
+						(p_edge_info->centre_pixel_x
+						,p_edge_info->centre_pixel_y
+						,AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0]
+						,rx
+						,ry
+						,layer_colour
+						);
 				} else if (ntype == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED) {
 					assert(ctype == EDGE_LAYER_CONNECTION_SENDS);
-					p_list->AddCircleFilled(pa, r, layer_colour, 17);
-					p_list->AddLine(pa, pb, layer_colour, r);
+					draw_inverted_arrow
+						(p_edge_info->centre_pixel_x
+						,p_edge_info->centre_pixel_y
+						,AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0]
+						,rx
+						,ry
+						,layer_colour
+						);
 				} else {
 					assert(ntype == EDGE_LAYER_CONNECTION_UNCONNECTED);
 					assert(ctype == EDGE_LAYER_CONNECTION_UNCONNECTED);
 				}
-			} else {
-	#if 0
-						if (b_cursor_over_this_cell_stack || b_cursor_over_neighbour_stack) {
-							ImU32 layer_colour = ImColor
-								(((j == 0) ? 196 : 128)
-								,((j == 1) ? 196 : 128)
-								,((j == 2) ? 196 : 128)
-								,255
-								);
-
-							if (b_cursor_over_this_cell_stack) {
-								float centre_x = p.x + a_x[j];
-								float centre_y = p.y + a_y[j];
-								p_list->AddCircleFilled(ImVec2(centre_x, centre_y),         r, layer_colour, 17);
-							}
-							if (b_cursor_over_neighbour_stack) {
-								p_list->AddCircleFilled(ImVec2(p.x + b_x[j], p.y + b_y[j]), r, layer_colour, 17);
-							}
-						}
-	#endif
 			}
 		}
 	}
