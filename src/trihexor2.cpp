@@ -1632,13 +1632,12 @@ layer_edge_iterator_init
 
 /* Properties of our hexagons... */
 
-#define HEXAGON_CENTRE_TO_VERTEX_DISTANCE                        (1.0f)
-#define HEXAGON_EDGE_LENGTH                                      (HEXAGON_CENTRE_TO_VERTEX_DISTANCE)
-#define HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE                   (SQRT3_4)
-#define HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE                  ((1.0f + SQRT3)/(2.0f + SQRT3)) /* ~0.73205 */
-#define HEXAGON_INNER_EDGE_LENGTH                                (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE)
-#define HEXAGON_INNER_CENTRE_TO_EDGE_CENTRE_DISTANCE             (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE*SQRT3_4) /* ~0.634 */
-#define HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE            (HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_CENTRE_TO_EDGE_CENTRE_DISTANCE) /* ~0.2 - maybe exact? */
+#define HEXAGON_OUTER_EDGE_LENGTH               (1.0f)
+#define HEXAGON_OUTER_APOTHEM_LENGTH            (SQRT3_4)
+#define HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE ((1.0f + SQRT3)/(2.0f + SQRT3)) /* ~0.73205 */
+#define HEXAGON_INNER_EDGE_LENGTH               (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE)
+#define HEXAGON_INNER_APOTHEM_LENGTH            (HEXAGON_INNER_CENTRE_TO_VERTEX_DISTANCE*SQRT3_4) /* ~0.634 */
+#define HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE (HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_APOTHEM_LENGTH) /* ~0.2 - maybe exact? */
 
 /* If each inner edge contains 3 points: one in the centre and the other two
  * spaced +/- this value, this is the unique value such that circles could be
@@ -1647,9 +1646,9 @@ layer_edge_iterator_init
 #define HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE ((SQRT3 + 3.0f)/(10.0f + 6.0f*SQRT3)) /* k = ~0.23205 */
 
 static const float AA_INNER_EDGE_CENTRE_POINTS[3][2] =
-	{{-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE, -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
-	,{0.0f,                                                      -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
-	,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE)}
+	{{-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE, -(HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE)}
+	,{0.0f,                                                      -(HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE)}
+	,{HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE,  -(HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE)}
 	};
 
 static const float AA_NEIGHBOUR_CENTRE_OFFSETS[3][2] = {{0.0f, -SQRT3}, {1.5f, -SQRT3_4}, {1.5f, SQRT3_4}};
@@ -1719,27 +1718,27 @@ static
 void
 draw_inverted_delayed_arrow
 	(float centre_x, float centre_y, float pre_offset_x, float scale_rotate_x, float scale_rotate_y, ImU32 colour) {
-	float       ay = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
-	float       by = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       ay = -(HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE);
+	float       by = -(HEXAGON_OUTER_APOTHEM_LENGTH + HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE);
 	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
 	ImVec2      a_points[19];
 	int         i;
 	ImDrawList *p_list = ImGui::GetWindowDrawList();
-	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_OUTER_APOTHEM_LENGTH+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
 	for (i = 0; i < 17; i++) {
 		float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
 		float arch_sin = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*sinf(i * ((float)M_PI) / 16.0f);
 		a_points[i+1]  = imvec2_cmac(centre_x, centre_y, pre_offset_x + arch_cos, ay + arch_sin, scale_rotate_x, scale_rotate_y);
 	}
-	a_points[i+1] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[i+1] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_OUTER_APOTHEM_LENGTH+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
 	p_list->AddConvexPolyFilled(a_points, 19, colour);
 	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x,      by - tr,      scale_rotate_x, scale_rotate_y);
 	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
 	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - tr, by + (SQRT3 - 1)*tr, scale_rotate_x, scale_rotate_y);
 	p_list->AddConvexPolyFilled(a_points, 3, colour);
 	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
-	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
-	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[1] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_OUTER_APOTHEM_LENGTH-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
+	a_points[2] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_OUTER_APOTHEM_LENGTH-HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
 	a_points[3] = imvec2_cmac(centre_x, centre_y, pre_offset_x - (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
 	p_list->AddConvexPolyFilled(a_points, 4, colour);
 }
@@ -1748,8 +1747,8 @@ draw_inverted_delayed_arrow
 static
 void
 draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float scale_rotate_x, float scale_rotate_y, ImU32 colour) {
-	float       ay = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
-	float       by = -(HEXAGON_CENTRE_TO_EDGE_CENTRE_DISTANCE + HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE);
+	float       ay = -(HEXAGON_OUTER_APOTHEM_LENGTH - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE);
+	float       by = -(HEXAGON_OUTER_APOTHEM_LENGTH + HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE);
 	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
 	ImVec2      a_points[19];
 	int         i;
@@ -2013,7 +2012,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 				float            ax            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 				float            ay            = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1];
 				float            bx            = ax;
-				float            by            = ay - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE*2;
+				float            by            = ay - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE*2;
 				float            rx            = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
 				float            ry            = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
 
@@ -2098,7 +2097,7 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 			float ay = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* small negative numbers */
 			float bx = ax;
-			float by = ay - HEXAGON_INNER_TO_OUTER_EDGE_PARALLEL_DISTANCE*2;
+			float by = ay - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE*2;
 			float rx = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
 			float ry = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
 			ImU32 layer_colour = ImColor
