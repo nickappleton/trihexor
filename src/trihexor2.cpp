@@ -1768,21 +1768,16 @@ draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float sc
 }
 
 
-void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct program *p_prog)
-{
+void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, struct plot_grid_state *p_state, struct program *p_prog) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
         return;
 
-    ImGuiContext& g = *GImGui;
-    const ImGuiStyle& style = g.Style;
-
-	ImVec2 graph_size;
+    ImGuiContext &g = *GImGui;
+    const ImGuiStyle &style = g.Style;
 	float radius = p_state->radius;
-	graph_size.x = ImGui::CalcItemWidth();
-	graph_size.y = style.FramePadding.y*2 + 700;
 
-    const ImRect frame_bb(window->DC.CursorPos, iv2_add(window->DC.CursorPos, graph_size));
+    const ImRect frame_bb(graph_pos, iv2_add(graph_pos, graph_size));
     const ImRect inner_bb(iv2_add(frame_bb.Min, style.FramePadding), iv2_sub(frame_bb.Max, style.FramePadding));
     const ImRect total_bb(frame_bb.Min, frame_bb.Max);
     ImGui::ItemSize(total_bb, style.FramePadding.y);
@@ -1881,6 +1876,8 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 			radius *= powf(2.0, io.MouseWheel/40.0f);
 			if (radius < 3.0f)
 				radius = 3.0f;
+			if (radius > 200.0f)
+				radius = 200.0f;
 			p_state->radius = radius;
 
 			bl_x -= (int64_t)(+mprel.x/(radius*3.0f)*65536.0f);
@@ -2223,86 +2220,9 @@ void plot_grid(struct gridstate *p_st, struct plot_grid_state *p_state, struct p
 
 
 
-int main(int argc, char **argv)
-{
-
-#if 0
-	int i;
-	int directions[100];
-	struct gridaddr pos;
-	pos.x = 0;
-	pos.y = 0;
-	for (i = 0; i < 100; i++) {
-
-		directions[i] = rand() & 0x7;
-		if (gridaddr_edge_neighbour(&pos, &pos, directions[i]))
-			abort();
-		printf("%d,%d,%d\n", i, pos.x, pos.y);
-	}
-	for (i = 0; i < 100; i++) {
-		if (gridaddr_edge_neighbour(&pos, &pos, dir_get_opposing(directions[(i*13)%100])))
-			abort();
-		printf("%d,%d,%d\n", i, pos.x, pos.y);
-	}
-	if (pos.x != 0 || pos.y != 0)
-		abort();
-
-#endif
+int main(int argc, char **argv) {
 	struct gridstate  gs;
 	gridstate_init(&gs);
-
-#if 0
-	struct gridaddr   addr;
-	struct gridcell  *p_cell;
-	int i;
-	uint32_t pdir = 0;
-
-
-	addr.x = 0;
-	addr.y = 0;
-	if ((p_cell = gridstate_get_gridcell(&gs, &addr, 1)) == NULL)
-		abort();
-
-	for (i = 0; i < 30; i++) {
-		struct gridcell *p_neighbour;
-		int edge_ctl;
-		int edge_dir = (pdir = (pdir*16 + 112*(rand()%EDGE_DIR_NUM) + 64)/128);
-		int virt_dir = rand()%VERTEX_DIR_NUM;
-		int virt_ctl = rand() & 1;
-
-		if ((p_neighbour = gridcell_get_vertex_neighbour(p_cell, virt_dir, 1)) == NULL)
-			abort();
-		gridcell_set_vert_flags_adv(p_cell, p_neighbour, virt_dir, virt_ctl);
-
-		if ((p_neighbour = gridcell_get_edge_neighbour(p_cell, edge_dir, 1)) == NULL)
-			abort();
-		
-		switch (rand()%5) {
-			case 0: edge_ctl = EDGE_TYPE_NOTHING; break;
-			case 1: edge_ctl = EDGE_TYPE_RECEIVER_DF; break;
-			case 2: edge_ctl = EDGE_TYPE_RECEIVER_DI; break;
-			case 3: edge_ctl = EDGE_TYPE_RECEIVER_F; break;
-			case 4: edge_ctl = EDGE_TYPE_RECEIVER_I; break;
-		}
-
-		gridcell_set_edge_flags_adv(p_cell, p_neighbour, edge_dir, edge_ctl);
-
-		(void)gridcell_get_gridpage_and_full_addr(p_cell, &addr);
-		//printf("set edge_flags for node %08x,%08x vdir=%d,%d\n", addr.x, addr.y, virt_dir, virt_ctl);
-		p_cell = p_neighbour;
-	}
-
-	i = 0;
-	printf("DEPTH = %d\n", gridpage_dump(gs.p_root, 1, &i));
-	printf("NODES = %d\n", i);
-#elif 0
-	if (grid_load(&gs, "startup.grid")) {
-		printf("failed to load from startup.grid\n");
-	} else {
-		printf("loaded startup.grid\n");
-	}
-
-#endif
 
 	// Setup window
 	glfwSetErrorCallback(glfw_error_callback);
@@ -2390,8 +2310,9 @@ int main(int argc, char **argv)
 		// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
 		// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
 		glfwPollEvents();
-		int display_w, display_h;
-		glfwGetFramebufferSize(window, &display_w, &display_h);
+		int window_w, window_h;
+		glfwGetWindowSize(window, &window_w, &window_h);
+
 
 		// Start the Dear ImGui frame
 		ImGui_ImplOpenGL3_NewFrame();
@@ -2407,15 +2328,30 @@ int main(int argc, char **argv)
 		}
 #endif
 
-		ImGui::SetNextWindowSize(ImVec2(/* FIXME FIXME FIXMEEEEEEEE */ display_w/2, display_h));
+		ImGui::SetNextWindowSize(ImVec2(/* FIXME FIXME FIXMEEEEEEEE */ window_w, window_h));
 		ImGui::SetNextWindowPos(ImVec2(0, 0));
-		ImGui::Begin("Designer", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+		ImGui::Begin("Designer", NULL, ImGuiWindowFlags_NoDecoration |  ImGuiWindowFlags_MenuBar);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
 
-		plot_grid(&gs, &plot_state, &prog);
-		
+		if (ImGui::BeginMenuBar()) {
+			if (ImGui::BeginMenu("File")) {
+				if (ImGui::MenuItem("New session")) {
+				}
+				if (ImGui::MenuItem("Open session")) {
+				}
+				if (ImGui::MenuItem("Save session")) {
+				}
+				if (ImGui::MenuItem("Save session as..")) {
+				}
+			ImGui::EndMenu();
+			}
+			ImGui::EndMenuBar();
+		}
 
-		ImGui::SameLine();
+		ImGuiWindow *p_window = ImGui::GetCurrentWindow();
 
+		float bottom_height = fminf(300.0f, 0.6f*(window_h - p_window->MenuBarHeight()));
+
+		plot_grid(&gs, ImVec2(10, 10+p_window->MenuBarHeight()), ImVec2(window_w-20, window_h - bottom_height-20), &plot_state, &prog);
 
 		ImGui::BeginGroup();
 		ImGui::Text("The grid contains %lu used cells", (unsigned long)prog.stacked_cell_count);
@@ -2476,6 +2412,9 @@ int main(int argc, char **argv)
 
 		// Rendering
 		ImGui::Render();
+
+		int display_w, display_h;
+		glfwGetFramebufferSize(window, &display_w, &display_h);
 		glViewport(0, 0, display_w, display_h);
 		glClearColor(clear_color.x*clear_color.w, clear_color.y*clear_color.w, clear_color.z*clear_color.w, clear_color.w);
 		glClear(GL_COLOR_BUFFER_BIT);
