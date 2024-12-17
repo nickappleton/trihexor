@@ -93,6 +93,9 @@ static int get_opposing_edge_id(int dir) {
 #define EDGE_LAYER_CONNECTION_RECEIVES_INVERTED       (3) /* 011 */
 #define EDGE_LAYER_CONNECTION_NET_CONNECTED           (4) /* 100 */
 
+#define GRIDCELL_CELL_EDGE_BITS_GET(x_, edge_id_)         ((((uint64_t)(x_)) >> (10 + 3*(edge_id_))) & 0x7)
+#define GRIDCELL_CELL_EDGE_BITS_SET(edge_id_, edge_type_) (((uint64_t)(edge_type_)) << (10 + 3*(edge_id_)))
+
 #define GRIDCELL_BIT_MERGED_LAYERS   (0x0000000010000000ull)
 #define GRIDCELL_BIT_FORCE_NET       (0x0000000020000000ull)
 
@@ -264,15 +267,12 @@ struct solve_stats {
 };
 
 struct gridstate {
-	struct gridpage    *p_root;
-	int                 stats_ok;
-	struct solve_stats  stats;
+	struct gridpage *p_root;
 
 };
 
 void gridstate_init(struct gridstate *p_gridstate) {
 	p_gridstate->p_root = NULL;
-	p_gridstate->stats_ok = 0;
 }
 
 
@@ -297,6 +297,183 @@ static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y, uint32_t *p_z) {
 	assert(*p_z < 3);
 }
 #endif
+
+static void write_u32(unsigned char *p_buf, uint32_t data) {
+	p_buf[0] = data & 0xFF;
+	p_buf[1] = (data >> 8) & 0xFF;
+	p_buf[2] = (data >> 16) & 0xFF;
+	p_buf[3] = (data >> 24) & 0xFF;
+}
+
+static void write_u64(unsigned char *p_buf, uint64_t data) {
+	write_u32(p_buf, data & 0xFFFFFFFF);
+	write_u32(p_buf, data >> 32);
+}
+
+#define RW_EDGE_NO_ACTION               (0) /* 000 */
+#define RW_EDGE_RECEIVES_DELAY_INVERTED (2) /* 001 */
+#define RW_EDGE_RECEIVES_INVERTED       (3) /* 010 */
+#define RW_EDGE_NET_CONNECTED           (4) /* 011 - only valid on n, ne, se (0, 1, 2) edges. */
+
+/* Returns size number of cell declarations written into p_buf.
+ * 
+ * p_buf must contain worst-case storage.
+ * 
+ * Up to PAGE_XY_NB*PAGE_XY_NB cell declarations will be written. Each cell
+ * declaration is 16 bytes. */
+static size_t gridpage_serialise(struct gridpage *p_page, unsigned char *p_buf) {
+	int    i;
+	size_t count = 0;
+	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB; i++) {
+		uint64_t ldata[3];
+
+		ldata[0] = p_page->data[i].data;
+		ldata[1] = p_page->data[i+256].data;
+		ldata[2] = p_page->data[i+512].data;
+		if (!CELL_WILL_GET_A_NET(ldata[0]) && !CELL_WILL_GET_A_NET(ldata[1]) && !CELL_WILL_GET_A_NET(ldata[2])) {
+			continue;
+		}
+
+		if (p_buf != NULL) {
+			uint32_t addr_x = p_page->position.x | (i & PAGE_XY_MASK);
+			uint32_t addr_y = p_page->position.y | ((i >> PAGE_XY_BITS) & PAGE_XY_MASK);
+			uint64_t edgemode_bits;
+			int      j, k;
+
+			/* 62 bits of xy position and 2 bits of hash */
+			assert(((addr_x | addr_y) & 0x80000000) == 0);
+			edgemode_bits  = (((uint64_t)addr_y) << 31) | addr_x;
+			edgemode_bits |= (edgemode_bits*8249772677985670961ull) & 0xC000000000000000;
+			write_u64(&(p_buf[count]), edgemode_bits);
+
+			/* 1-bit of merged layer indication */
+			if (ldata[0] & GRIDCELL_BIT_MERGED_LAYERS) {
+				assert((ldata[1] & GRIDCELL_BIT_MERGED_LAYERS) != 0);
+				assert((ldata[2] & GRIDCELL_BIT_MERGED_LAYERS) != 0);
+				edgemode_bits = 1;
+			} else {
+				assert((ldata[1] & GRIDCELL_BIT_MERGED_LAYERS) == 0);
+				assert((ldata[2] & GRIDCELL_BIT_MERGED_LAYERS) == 0);
+				edgemode_bits = 0;
+			}
+
+			/* 3-bits of force-net flags */
+			for (k = 0; k < 3; k++) {
+				edgemode_bits = (edgemode_bits << 1) | ((ldata[k] & GRIDCELL_BIT_FORCE_NET) ? 1 : 0);
+			}
+
+			/* writes 54 bits */
+			for (k = 0; k < 3; k++) {
+				for (j = 0; j < 3; j++) {
+					if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_NET_CONNECTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NET_CONNECTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_DELAY_INVERTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_INVERTED;
+					else
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NO_ACTION;
+				}
+				for (; j < 6; j++) {
+					if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_NET_CONNECTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NET_CONNECTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_DELAY_INVERTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_INVERTED;
+					else
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NO_ACTION;
+				}
+			}
+
+			/* 54+3+1=58 bits of cell information 6 bits of hash. */
+			edgemode_bits |= (edgemode_bits*8249772677985670961ull) & 0xFC00000000000000;
+			write_u64(&(p_buf[count+8]), edgemode_bits);
+		}
+
+		count += 16;
+
+	}
+	return count >> 4;
+}
+
+struct gridpage_enumerator_item {
+	struct gridpage *p_page;
+	int              child_id;
+};
+
+struct gridpage_enumerator {
+	struct gridpage_enumerator_item a_stack[64];
+	int stack_pos;
+};
+
+static void push_down(struct gridpage_enumerator *p_enumerator) {
+	do {
+		struct gridpage_enumerator_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]);
+		while (p_top->child_id < CELL_LOOKUP_NB && p_top->p_page->lookups[p_top->child_id] == NULL) {
+			p_top->child_id++;
+		}
+		if (p_top->child_id == CELL_LOOKUP_NB) {
+			break;
+		}
+		p_enumerator->stack_pos++;
+		p_enumerator->a_stack[p_enumerator->stack_pos].child_id = 0;
+		p_enumerator->a_stack[p_enumerator->stack_pos].p_page   = p_top->p_page->lookups[p_top->child_id];
+	} while (1);
+}
+
+static void gridpage_enumerator_init(struct gridpage_enumerator *p_enumerator, struct gridpage *p_root) {
+	if (p_root == NULL) {
+		p_enumerator->stack_pos           = -1;
+	} else {
+		p_enumerator->a_stack[0].p_page   = p_root;
+		p_enumerator->a_stack[0].child_id = 0;
+		p_enumerator->stack_pos           = 0;
+		push_down(p_enumerator);
+	}
+}
+
+static struct gridpage *gridpage_enumerator_get(struct gridpage_enumerator *p_enumerator) {
+	struct gridpage                  *p_ret = NULL;
+	if (p_enumerator->stack_pos >= 0) {
+		struct gridpage_enumerator_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]);
+		if (p_top->child_id == CELL_LOOKUP_NB) {
+			p_ret                    = p_top->p_page;
+			p_enumerator->stack_pos -= 1;
+		} else {
+			p_ret                    = p_top->p_page->lookups[p_top->child_id];
+		}
+		if (p_enumerator->stack_pos >= 0) {
+			p_enumerator->a_stack[p_enumerator->stack_pos].child_id++;
+			push_down(p_enumerator);
+		}
+	}
+	return p_ret;
+}
+
+static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buffer) {
+	struct gridpage_enumerator  enumerator;
+	struct gridpage            *p_page;
+	uint64_t                    num_total_cells = 0;
+
+	num_total_cells = 0;
+	gridpage_enumerator_init(&enumerator, p_grid->p_root);
+	while ((p_page = gridpage_enumerator_get(&enumerator)) != NULL) {
+		num_total_cells += gridpage_serialise(p_page, NULL);
+	}
+
+	if (p_buffer != NULL) {
+		write_u64(p_buffer, num_total_cells);
+		p_buffer += 8;
+
+		gridpage_enumerator_init(&enumerator, p_grid->p_root);
+		while ((p_page = gridpage_enumerator_get(&enumerator)) != NULL) {
+			p_buffer += 16*gridpage_serialise(p_page, p_buffer);
+		}
+	}
+
+	return 8 + num_total_cells*16;
+}
 
 
 
@@ -507,7 +684,7 @@ struct program {
 	size_t               net_count;
 
 	/* stack */
-	void               **pp_stack;
+	struct gridcell    **pp_stack;
 	size_t               stack_count;
 	size_t               stack_alloc_count;
 
@@ -703,13 +880,13 @@ static int program_is_valid(struct program *p_program) {
 	return (p_program->net_count == 0) || (p_program->code_count > 0);
 }
 
-static void program_stack_push(struct program *p_program, void *p_ptr) {
+static void program_stack_push(struct program *p_program, struct gridcell *p_ptr) {
 	if (p_program->stack_count >= p_program->stack_alloc_count) {
-		size_t newsz = ((p_program->stack_alloc_count*4)/3) & ~(size_t)0xff;
-		void **pp_new_list;
+		size_t            newsz = ((p_program->stack_alloc_count*4)/3) & ~(size_t)0xff;
+		struct gridcell **pp_new_list;
 		if (newsz < 1024)
 			newsz = 1024;
-		if ((pp_new_list = (void **)realloc(p_program->pp_stack, newsz*sizeof(void *))) == NULL)
+		if ((pp_new_list = (struct gridcell **)realloc(p_program->pp_stack, newsz*sizeof(struct gridcell *))) == NULL)
 			abort();
 		p_program->pp_stack          = pp_new_list;
 		p_program->stack_alloc_count = newsz;
@@ -792,9 +969,7 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
  * stored data. It can also be used to force values on in the program
  * data prior to execution. */
 static int program_compile(struct program *p_program, struct gridstate *p_gridstate) {
-	size_t            num_grid_pages;
 	size_t            num_cells;
-	struct gridcell **pp_list_base;
 	int               num_broken_nets = 0;
 
 	p_program->stack_count        = 0;
@@ -808,20 +983,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	if (p_gridstate->p_root == NULL)
 		return 0;
 
-	/* 1) push all active grid-pages onto the stack. */
-	{
-		program_stack_push(p_program, p_gridstate->p_root);
-		for (num_grid_pages = 0; num_grid_pages < p_program->stack_count; num_grid_pages++) {
-			struct gridpage *p_gp = (struct gridpage *)p_program->pp_stack[num_grid_pages];
-			int i;
-			for (i = 0; i < CELL_LOOKUP_NB; i++) {
-				if (p_gp->lookups[i]) {
-					program_stack_push(p_program, p_gp->lookups[i]);
-				}
-			}
-		}
-	}
-
 #if PROGRAM_DEBUG
 	printf("added %llu grid pages\n", (unsigned long long)num_grid_pages);
 #endif
@@ -829,14 +990,17 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	/* 2) push all used grid-cells onto the list. set their net id to the
 	 * position in the list and clear the compute bit. */
 	{
-		size_t    i;
-		size_t    stacked_cell_count = 0;
-		uint32_t  min_x = 0;
-		uint32_t  max_x = 0;
-		uint32_t  min_y = 0;
-		uint32_t  max_y = 0;
-		for (num_cells = 0, i = 0; i < num_grid_pages; i++) {
-			struct gridpage *p_gp = (struct gridpage *)p_program->pp_stack[i];
+		size_t                      stacked_cell_count = 0;
+		uint32_t                    min_x = 0;
+		uint32_t                    max_x = 0;
+		uint32_t                    min_y = 0;
+		uint32_t                    max_y = 0;
+		struct gridpage_enumerator  enumerator;
+		struct gridpage            *p_gp;
+
+		num_cells = 0;
+		gridpage_enumerator_init(&enumerator, p_gridstate->p_root);
+		while ((p_gp = gridpage_enumerator_get(&enumerator)) != NULL) {
 			int j;
 			for (j = 0; j < PAGE_XY_NB*PAGE_XY_NB; j++) {
 				int      l;
@@ -882,10 +1046,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		/* store statistics */
 		p_program->stacked_cell_count = stacked_cell_count;
 		p_program->substrate_area     = stacked_cell_count ? ((2 + max_y - min_y)*(uint64_t)(4 + 3*max_x - 3*min_x)) : 0; /* scale by for box area SQRT3_4*0.5  */
-
-		/* note to future self - DO NOT CALL program_stack_push after this
-		 * it could change the base pointer of pp_stack. */
-		pp_list_base = (struct gridcell **)&(p_program->pp_stack[num_grid_pages]);
 	}
 
 #if PROGRAM_DEBUG
@@ -900,6 +1060,11 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	 * GRIDCELL_PROGRAM_BUSY_BIT bit set. */
 	{
 		uint32_t group_pos;
+
+		/* note to future self - DO NOT CALL program_stack_push after this
+		 * it could change the base pointer of pp_stack. */
+		struct gridcell **pp_list_base = p_program->pp_stack;
+
 		group_pos   = 0;
 		while (group_pos < num_cells) {
 			uint32_t            group_end                    = group_pos;
@@ -932,7 +1097,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				group_pos++;
 			} while (group_pos < group_end);
 			p_net->cell_count = group_pos - p_net->first_cell_stack_index;
-			p_net->first_cell_stack_index += num_grid_pages; /* ensure offset is applied past the grid pages at the start. */
 		}
 	}
 
@@ -2207,8 +2371,6 @@ int main(int argc, char **argv)
 	//IM_ASSERT(font != NULL);
 
 	// Our state
-	bool show_demo_window = true;
-	bool show_another_window = false;
 	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
 	struct plot_grid_state plot_state;
@@ -2235,47 +2397,20 @@ int main(int argc, char **argv)
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-		// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-		if (show_demo_window)
-			ImGui::ShowDemoWindow(&show_demo_window);
-
 		// 2. Show a simple window that we create ourselves. We use a Begin/End pair to created a named window.
 		{
-			static float f = 0.0f;
-			static int counter = 0;
-
-			ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
-
-			ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-			ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-			ImGui::Checkbox("Another Window", &show_another_window);
-
-			ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-			ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
-
-			if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-				counter++;
-			ImGui::SameLine();
-			ImGui::Text("counter = %d", counter);
-
+			ImGui::Begin("FPS");                          // Create a window called "Hello, world!" and append into it.
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-			ImGui::End();
-
-		}
-
-		// 3. Show another simple window.
-		if (show_another_window)
-		{
-			ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-			ImGui::Text("Hello from another window!");
-			if (ImGui::Button("Close Me"))
-				show_another_window = false;
 			ImGui::End();
 		}
 
 		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+		
 		plot_grid(&gs, &plot_state, &prog);
+
 		ImGui::SameLine();
+
+
 		ImGui::BeginGroup();
 		ImGui::Text("The grid contains %lu used cells", (unsigned long)prog.stacked_cell_count);
 		if (prog.stacked_cell_count) {
@@ -2304,6 +2439,32 @@ int main(int argc, char **argv)
 			// ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
 			// ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
 		}
+
+		if (program_is_valid(&prog)) {
+			size_t    i;
+			uint32_t *p_code = prog.p_code;
+			ImGui::Text("Program Disassembly (%llu words)", (unsigned long long)prog.code_count);
+			for (i = 0; i < prog.net_count; i++) {
+				size_t nb_sources = *p_code++;
+				ImGui::Text("  NET %llu SOURCES", (unsigned long long)i);
+				while (nb_sources--) {
+					uint32_t  word       = *p_code++;
+					uint32_t  op         = word >> 24;
+					uint32_t  src_net    = word & 0xFFFFFF;
+					const char *p_opname;
+					if (op == 0) {
+						assert(src_net < i);
+						p_opname = "    INVERT      ";
+					} else {
+						assert(src_net < prog.net_count);
+						assert(op == 1);
+						p_opname = "    DELAYINVERT ";
+					}
+					ImGui::Text("    %s %lu", p_opname, (unsigned long)src_net);
+				}
+			}
+		}
+
 		ImGui::EndGroup();
 		ImGui::End();
 
