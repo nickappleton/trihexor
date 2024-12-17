@@ -2390,22 +2390,29 @@ int main(int argc, char **argv)
 		// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
 		// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
 		glfwPollEvents();
+		int display_w, display_h;
+		glfwGetFramebufferSize(window, &display_w, &display_h);
 
 		// Start the Dear ImGui frame
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+#if 0
 		// 2. Show a simple window that we create ourselves. We use a Begin/End pair to created a named window.
 		{
 			ImGui::Begin("FPS");                          // Create a window called "Hello, world!" and append into it.
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f/ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 			ImGui::End();
 		}
+#endif
 
-		ImGui::Begin("Designer");   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-		
+		ImGui::SetNextWindowSize(ImVec2(/* FIXME FIXME FIXMEEEEEEEE */ display_w/2, display_h));
+		ImGui::SetNextWindowPos(ImVec2(0, 0));
+		ImGui::Begin("Designer", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+
 		plot_grid(&gs, &plot_state, &prog);
+		
 
 		ImGui::SameLine();
 
@@ -2469,8 +2476,6 @@ int main(int argc, char **argv)
 
 		// Rendering
 		ImGui::Render();
-		int display_w, display_h;
-		glfwGetFramebufferSize(window, &display_w, &display_h);
 		glViewport(0, 0, display_w, display_h);
 		glClearColor(clear_color.x*clear_color.w, clear_color.y*clear_color.w, clear_color.z*clear_color.w, clear_color.w);
 		glClear(GL_COLOR_BUFFER_BIT);
