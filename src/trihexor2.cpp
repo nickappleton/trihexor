@@ -1723,7 +1723,7 @@ draw_inverted_delayed_arrow
 	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
 	ImVec2      a_points[19];
 	int         i;
-	ImDrawList *p_list = ImGui::GetWindowDrawList();
+	ImDrawList *p_list = ImGui::GetBackgroundDrawList();
 	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), -HEXAGON_OUTER_APOTHEM_LENGTH+HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.25f, scale_rotate_x, scale_rotate_y);
 	for (i = 0; i < 17; i++) {
 		float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
@@ -1752,7 +1752,7 @@ draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float sc
 	float       tr = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE/2.8f);
 	ImVec2      a_points[19];
 	int         i;
-	ImDrawList *p_list = ImGui::GetWindowDrawList();
+	ImDrawList *p_list = ImGui::GetBackgroundDrawList();
 	a_points[0] = imvec2_cmac(centre_x, centre_y, pre_offset_x + (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f), by, scale_rotate_x, scale_rotate_y);
 	for (i = 0; i < 17; i++) {
 		float arch_cos = (HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f/2.8f)*cosf(i * ((float)M_PI) / 16.0f);
@@ -1768,26 +1768,22 @@ draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float sc
 }
 
 
-void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, struct plot_grid_state *p_state, struct program *p_prog) {
+void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state *p_state, struct program *p_prog) {
+#if 0
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
         return;
 
     ImGuiContext &g = *GImGui;
     const ImGuiStyle &style = g.Style;
+#endif
 	float radius = p_state->radius;
 
-	const ImRect frame_bb(graph_pos, iv2_add(graph_pos, graph_size));
-	const ImVec2 pad = ImVec2(4, 4);
-	const ImRect inner_bb(iv2_add(frame_bb.Min, pad), iv2_sub(frame_bb.Max, pad));
-	ImGui::ItemSize(frame_bb, style.FramePadding.y);
+	const ImRect inner_bb(ImVec2(0, 0), graph_size);
 
-	const ImGuiID id = window->GetID((void *)p_st);
-    if (!ImGui::ItemAdd(frame_bb, id, &frame_bb, 0))
-        return;
-
+    ImGuiContext &g = *GImGui;
 	ImGuiIO& io = ImGui::GetIO();
-    const bool hovered = ImGui::ItemHoverable(inner_bb, id);
+    const bool hovered = !io.WantCaptureMouse;
 
 	ImVec2 mprel = ImVec2(io.MousePos.x - inner_bb.Min.x, inner_bb.Max.y - io.MousePos.y);
 
@@ -1835,11 +1831,6 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, stru
 		p_state->mouse_down_pos           = mprel;
 		p_state->mouse_down               = 1;
 		p_state->b_mouse_down_pos_changed = 0;
-
-		/* todo: I can't remember what these are for at all. */
-		ImGui::SetActiveID(id, window);
-		ImGui::SetFocusID(id, window);
-		ImGui::FocusWindow(window);
 	}
 
 	/* If the mouse is down, implement dragging the grid around. */
@@ -1859,7 +1850,6 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, stru
 			bl_y = 0;
 
 		if (!g.IO.MouseDown[0]) {
-			ImGui::ClearActiveID();
 			p_state->mouse_down = 0;
 			p_state->bl_x = bl_x;
 			p_state->bl_y = bl_y;
@@ -1947,11 +1937,9 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, stru
 		program_run(p_prog);
 	}
 
-	ImDrawList *p_list = ImGui::GetWindowDrawList();
+	ImDrawList *p_list = ImGui::GetBackgroundDrawList();
 
-	p_list->AddRectFilled(frame_bb.Min, frame_bb.Max, ImColor(128, 128, 128, 255));
-
-	p_list->PushClipRect(inner_bb.Min, inner_bb.Max, true);  // Render-level scissoring. This is passed down to your render function but not used for CPU-side coarse clipping. Prefer using higher-level ImGui::PushClipRect() to affect logic (hit-testing and widget culling)
+	p_list->AddRectFilled(inner_bb.Min, inner_bb.Max, ImColor(128, 128, 128, 255));
 
 	/* 1) Draw hexagons */
 	visible_cell_iterator_init(&iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
@@ -2185,19 +2173,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, stru
 		}
 	}
 
-
-
-
-#if 0
-			draw_edge_arrows(edge_mode_n, p.x, p.y, 0.0f, -0.866f, radius);
-			draw_edge_arrows(edge_mode_ne, p.x, p.y, 0.75f, -0.433f, radius);
-			draw_edge_arrows(edge_mode_se, p.x, p.y, 0.75f, +0.433f, radius);
-#endif
-
-	p_list->PopClipRect();
-
-#if 1
-	if (ImGui::IsItemHovered() && g.IO.KeyCtrl) {
+	if (hovered && g.IO.KeyCtrl) {
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
@@ -2214,7 +2190,6 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_pos, ImVec2 graph_size, stru
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
-#endif
 }
 
 
@@ -2274,21 +2249,6 @@ int main(int argc, char **argv) {
 	ImGui_ImplGlfw_InitForOpenGL(window, true);
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
-	// Load Fonts
-	// - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-	// - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-	// - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-	// - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-	// - Read 'docs/FONTS.md' for more instructions and details.
-	// - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-	//io.Fonts->AddFontDefault();
-	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-	//io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
-	//ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-	//IM_ASSERT(font != NULL);
-
 	// Our state
 	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -2301,7 +2261,8 @@ int main(int argc, char **argv) {
 	struct program prog;
 	program_init(&prog);
 
-	// Main loop
+	bool b_show_program_disassembly = false;
+
 	while (!glfwWindowShouldClose(window))
 	{
 		// Poll and handle events (inputs, window resize, etc.)
@@ -2327,12 +2288,9 @@ int main(int argc, char **argv) {
 			ImGui::End();
 		}
 #endif
+		plot_grid(&gs, ImVec2(window_w, window_h), &plot_state, &prog);
 
-		ImGui::SetNextWindowSize(ImVec2(/* FIXME FIXME FIXMEEEEEEEE */ window_w, window_h));
-		ImGui::SetNextWindowPos(ImVec2(0, 0));
-		ImGui::Begin("Designer", NULL, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration |  ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-//NoTitleBar | NoResize | NoScrollbar | NoCollapse
-		if (ImGui::BeginMenuBar()) {
+		if (ImGui::BeginMainMenuBar()) {
 			if (ImGui::BeginMenu("File")) {
 				if (ImGui::MenuItem("New session")) {
 				}
@@ -2342,29 +2300,55 @@ int main(int argc, char **argv) {
 				}
 				if (ImGui::MenuItem("Save session as..")) {
 				}
-			ImGui::EndMenu();
+				ImGui::EndMenu();
 			}
-			ImGui::EndMenuBar();
+
+			if (ImGui::BeginMenu("Debug")) {
+				if (ImGui::MenuItem("Show program disassembly")) {
+					b_show_program_disassembly = true;
+				}
+				ImGui::EndMenu();
+			}
+
+			ImGui::EndMainMenuBar();
 		}
 
-		ImGuiWindow *p_window = ImGui::GetCurrentWindow();
-		int menu_height = p_window->MenuBarHeight();
-		int window_h_remain = window_h - menu_height;
-
-		int gridwindow_h = fmaxf(300.0f, (3*window_h_remain)/4);
-		ImVec2 child_pos  = ImVec2(p_window->WindowPadding.x, menu_height + p_window->WindowPadding.y);
-		ImVec2 child_size = ImVec2(window_w - 2*p_window->WindowPadding.x, gridwindow_h - 2*p_window->WindowPadding.y);
-		ImGui::SetNextWindowPos(child_pos);
-		if (ImGui::BeginChild("##designer_canvas", child_size, 0, ImGuiWindowFlags_NoSavedSettings)) {
-			plot_grid(&gs, ImVec2(child_pos.x, child_pos.y), child_size, &plot_state, &prog);
-			ImGui::EndChild();
+		if (b_show_program_disassembly && ImGui::Begin("Debug - Program Disassembly", &b_show_program_disassembly)) {
+			if (!program_is_valid(&prog)) {
+				ImGui::Text("The grid is currently invalid");
+			} else if (prog.net_count == 0) {
+				ImGui::Text("The grid has no nets assigned to it");
+			} else {
+				size_t    i;
+				uint32_t *p_code = prog.p_code;
+				ImGui::Text("The grid contains %lu nets", (unsigned long)prog.net_count);
+				ImGui::Text("The longest chain of operations is %lu", (unsigned long)prog.worst_logic_chain);
+				ImGui::Text("Program Disassembly (%llu words)", (unsigned long long)prog.code_count);
+				for (i = 0; i < prog.net_count; i++) {
+					size_t nb_sources = *p_code++;
+					ImGui::Text("  NET %llu SOURCES", (unsigned long long)i);
+					while (nb_sources--) {
+						uint32_t  word       = *p_code++;
+						uint32_t  op         = word >> 24;
+						uint32_t  src_net    = word & 0xFFFFFF;
+						const char *p_opname;
+						if (op == 0) {
+							assert(src_net < i);
+							p_opname = "    INVERT      ";
+						} else {
+							assert(src_net < prog.net_count);
+							assert(op == 1);
+							p_opname = "    DELAYINVERT ";
+						}
+						ImGui::Text("    %s %lu", p_opname, (unsigned long)src_net);
+					}
+				}
+			}
+			ImGui::End();
 		}
 
-		window_h_remain -= gridwindow_h;
 
-		child_pos  = ImVec2(p_window->WindowPadding.x, window_h - window_h_remain);
-		child_size = ImVec2(window_w - 2*p_window->WindowPadding.x, window_h_remain - p_window->WindowPadding.y);
-		ImGui::SetNextWindowPos(child_pos);
+#if 0
 		if (ImGui::BeginChild("##remainder", child_size, 0, ImGuiWindowFlags_NoSavedSettings)) {
 			/* Level selection */
 			const char* items[] = {"Sandbox", "1. Tutorial - Inverter", "2. Tutorial - Delay Inverter", "3. Tutorial - Merging Layers" };
@@ -2372,18 +2356,6 @@ int main(int argc, char **argv) {
 			ImGui::BeginGroup();
 			ImGui::Text("Goal selection");
 			if (ImGui::BeginListBox("##levelselector")) {
-				for (int n = 0; n < IM_ARRAYSIZE(items); n++) {
-					const bool is_selected = (item_current_idx == n);
-					if (ImGui::Selectable(items[n], is_selected))
-						item_current_idx = n;
-					// Set the initial focus when opening the combo (scrolling + keyboard navigation focus)
-					if (is_selected)
-						ImGui::SetItemDefaultFocus();
-				}
-				ImGui::EndListBox();
-			}
-			ImGui::Text("Attempt selection");
-			if (ImGui::BeginListBox("##levelselector2")) {
 				for (int n = 0; n < IM_ARRAYSIZE(items); n++) {
 					const bool is_selected = (item_current_idx == n);
 					if (ImGui::Selectable(items[n], is_selected))
@@ -2407,53 +2379,11 @@ int main(int argc, char **argv) {
 				ImGui::Text("Cell utilisation %f %%", (float)(prog.stacked_cell_count*600.0f/prog.substrate_area));
 			}
 
-			if (!program_is_valid(&prog)) {
-				ImGui::Text("The grid has a loop!");
-			} else if (prog.net_count == 0) {
-				ImGui::Text("The grid has no nets assigned to it!");
-			} else {
-				ImGui::Text("The grid contains %lu nets", (unsigned long)prog.net_count);
-				ImGui::Text("The longest chain of operations is %lu", (unsigned long)prog.worst_logic_chain);
-
-				// int64_t width = gs.stats.max_x - (int64_t)gs.stats.min_x + 1;
-				// int64_t height = gs.stats.max_y - (int64_t)gs.stats.min_y + 1;
-				// ImGui::Text("Grid Width: %lld", (long long)width);
-				// ImGui::Text("Grid Height: %lld", (long long)height);
-				// ImGui::Text("Grid Area: %lld", (long long)width*height);
-				// ImGui::Text("Total Cells: %ld", (long)gs.stats.num_cells);
-				// ImGui::Text("Area Efficiency %f", gs.stats.num_cells*100.0f/(float)(width*height));
-				// ImGui::Text("Num Edge Connections: %ld", (long)gs.stats.num_edgeops);
-				// ImGui::Text("Num Vertex Connections: %ld", (long)gs.stats.num_vertops);
-			}
-
-			if (program_is_valid(&prog)) {
-				size_t    i;
-				uint32_t *p_code = prog.p_code;
-				ImGui::Text("Program Disassembly (%llu words)", (unsigned long long)prog.code_count);
-				for (i = 0; i < prog.net_count; i++) {
-					size_t nb_sources = *p_code++;
-					ImGui::Text("  NET %llu SOURCES", (unsigned long long)i);
-					while (nb_sources--) {
-						uint32_t  word       = *p_code++;
-						uint32_t  op         = word >> 24;
-						uint32_t  src_net    = word & 0xFFFFFF;
-						const char *p_opname;
-						if (op == 0) {
-							assert(src_net < i);
-							p_opname = "    INVERT      ";
-						} else {
-							assert(src_net < prog.net_count);
-							assert(op == 1);
-							p_opname = "    DELAYINVERT ";
-						}
-						ImGui::Text("    %s %lu", p_opname, (unsigned long)src_net);
-					}
-				}
-			}
 
 			ImGui::EndGroup();
 		}
 		ImGui::End();
+#endif
 
 		// Rendering
 		ImGui::Render();
