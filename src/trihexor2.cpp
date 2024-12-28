@@ -1882,6 +1882,21 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	struct layer_edge_iterator      edge_iter;
 	const struct layer_edge_info   *p_edge_info;
 
+	/* three cases:
+	 *
+	 *  1. p_hovered_cell==NULL and b_hovered_on_edge==0
+	 *     hovered_cell_addr contains an address where z=0 of a cell which
+	 *     is not attached to any net and the mouse is not over an edge
+	 *     detail.
+	 * 
+	 *  2. p_hovered_cell==NULL and b_hovered_on_edge==1
+	 *     hovered_cell_addr contains an address where the mouse is over an
+	 *     edge detail (and z is valid) but the cell is not attached to any
+	 *     net.
+	 *
+	 *  3. p_hovered_cell!=NULL and b_hovered_on_edge==1
+	 *     hovered_cell_addr contains an address where the mouse is over an
+	 *     edge detail (and z is valid) and the cell is attached to a net. */
 	struct gridaddr                 hovered_cell_addr;
 	const struct gridcell          *p_hovered_cell = NULL;
 	int                             b_hovered_on_edge = 0;
