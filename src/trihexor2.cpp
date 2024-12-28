@@ -93,28 +93,48 @@ static int get_opposing_edge_id(int dir) {
 #define EDGE_LAYER_CONNECTION_RECEIVES_INVERTED       (3) /* 011 */
 #define EDGE_LAYER_CONNECTION_NET_CONNECTED           (4) /* 100 */
 
+/* 6*3 bits = 18 bits */
 #define GRIDCELL_CELL_EDGE_BITS_GET(x_, edge_id_)         ((((uint64_t)(x_)) >> (10 + 3*(edge_id_))) & 0x7)
 #define GRIDCELL_CELL_EDGE_BITS_SET(edge_id_, edge_type_) (((uint64_t)(edge_type_)) << (10 + 3*(edge_id_)))
 
 #define GRIDCELL_BIT_MERGED_LAYERS   (0x0000000010000000ull)
-#define GRIDCELL_BIT_FORCE_NET       (0x0000000020000000ull)
+#define GRIDCELL_NET_LABEL_BIT       (0x0000000020000000ull)
 
 #define GRIDCELL_PROGRAM_NET_ID_BITS            (0xFFFFFF0000000000ull)
 #define GRIDCELL_PROGRAM_NET_ID_BITS_SET(x_)    (((uint64_t)(x_)) << 40)
 #define GRIDCELL_PROGRAM_NET_ID_BITS_GET(x_)    ((x_) >> 40)
+
+/* The following bits get set by program_compile() if a failure occurs. They
+ * can be used to work out if the cell is responsible for an error
+ * condition. */
 #define GRIDCELL_PROGRAM_BROKEN_BITS            (0x000000FC00000000ull)
 #define GRIDCELL_PROGRAM_BROKEN_BIT_MASK(edge_) (((uint64_t)0x400000000) << (edge_))
-#define GRIDCELL_PROGRAM_BUSY_BIT               (0x0000000200000000ull)
+#define GRIDCELL_PROGRAM_BUSY_BIT               (0x0000000200000000ull) /* Indicates that the cell itself is part of a dependency loop */
+#define GRIDCELL_PROGRAM_MULTI_NAME_BIT         (0x0000000100000000ull) /* Indicates that the net which this cell is part of has been named in multiple locations and this is one of the cells */
 
+/*
+ * 63       55       47       39       31       23       15       7
+ * PPPPPPPP PPPPPPPP PPPPPPPP BBBBBB12 MN__EEEE EEEEEEEE EEEEEEAA AAAAAAAA
+ * 
+ * A = 10 bits of address into gridpage
+ * E = 18 bits of edge properties
+ * N = 1 NAMED_NET bit
+ * M = 1 MERGED_LAYERS bit
+ * 1 = 1 Program Busy Bit or cell-involved-in-cycle-error bit
+ * 2 = 1 Multi name bit
+ * B = 6 bits of edge-involved-in-cycle error bits
+ * P = 24 bits of net identifier
+ * 
+ * Maybe we need a NAMED_NET error bit for when multiple cells are tagged with net naming information? */
 
-#define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT)
+#define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT)
 
 
 /* tests if any cell edges are not disconnected, the layers are merged or the
- * FORCE_NET bit is set. if this is set, the cell is guaranteed to have a net
+ * NAMED_NET bit is set. if this is set, the cell is guaranteed to have a net
  * assigned to it. If it is not set, the cell definitely will not have a net
  * assigned to it. */
-#define CELL_WILL_GET_A_NET(data_)   (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_BIT_FORCE_NET | 0xFFFFC00)) != 0)
+#define CELL_WILL_GET_A_NET(data_)   (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_NET_LABEL_BIT | 0xFFFFC00)) != 0)
 
 
 /* How the grid is layed out:
@@ -206,9 +226,9 @@ struct gridcell {
 	 * is either set on none or all layers.
 	 * 28    - MERGED_LAYERS
 	 *
-	 * This bit does absolutely nothing except guarantee that a net will be
-	 * provided for this cell.
-	 * 29    - FORCE_NET
+	 * This bit indicates that the cell defines a name or description for the
+	 * net it is part of. This bit guarantees the creation of a net.
+	 * 29    - NAMED_NET
 	 *
 	 * This bit is used as a temporary while creating a program. Once the
 	 * program has been written this bit will be cleared. If the program
@@ -234,9 +254,20 @@ static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_
 struct gridpage {
 	struct gridcell   data[PAGE_XY_NB*PAGE_XY_NB*NUM_LAYERS];
 	struct gridstate *p_owner;
-	struct gridpage  *lookups[CELL_LOOKUP_NB];
+	struct gridpage  *ap_lookups[CELL_LOOKUP_NB];
 	struct gridaddr   position; /* position of data[0] in the full grid  */
 	
+};
+
+#define MAX_NET_NAME_LENGTH (64)
+#define MAX_NET_DESCRIPTION_LENGTH (8192)
+
+struct cellnetinfo {
+	struct gridaddr     position;          /* key and full position of cell (with z==0). this cell must have the MERGED_LAYERS and NAMED_NET bits set. */
+	struct cellnetinfo *ap_lookups[CELL_LOOKUP_NB];
+	char                aa_net_name[NUM_LAYERS][MAX_NET_NAME_LENGTH];        /* unique name for the net containing this cell. */
+	char                aa_net_description[NUM_LAYERS][MAX_NET_DESCRIPTION_LENGTH]; /* description for the net which contains this cell. */
+
 };
 
 #ifndef NDEBUG
@@ -245,6 +276,7 @@ static void verify_gridpage(struct gridpage *p_page, const char *p_file, const i
 	RT_ASSERT_INNER(p_page->p_owner != NULL, p_file, line);
 	RT_ASSERT_INNER((p_page->position.x & PAGE_XY_MASK) == 0, p_file, line);
 	RT_ASSERT_INNER((p_page->position.y & PAGE_XY_MASK) == 0, p_file, line);
+	RT_ASSERT_INNER((p_page->position.z == 0), p_file, line);
 	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB*NUM_LAYERS; i++)
 		RT_ASSERT_INNER((p_page->data[i].data & 0x3FF) == i, p_file, line);
 }
@@ -253,28 +285,16 @@ static void verify_gridpage(struct gridpage *p_page, const char *p_file, const i
 #define DEBUG_CHECK_GRIDPAGE(p_page_) ((void)0)
 #endif
 
-struct solve_stats {
-	/* Grid dimensions */
-	int32_t min_x;
-	int32_t max_x;
-	int32_t min_y;
-	int32_t max_y;
-
-	int32_t num_edgeops;
-	int32_t num_vertops;
-	int32_t num_cells;
-
-};
-
 struct gridstate {
-	struct gridpage *p_root;
+	struct gridpage    *p_root;
+	struct cellnetinfo *p_cell_info;
 
 };
 
 void gridstate_init(struct gridstate *p_gridstate) {
-	p_gridstate->p_root = NULL;
+	p_gridstate->p_root      = NULL;
+	p_gridstate->p_cell_info = NULL;
 }
-
 
 /* Converts a grid address into a unique, scrambled and invertible
  * identifier. */
@@ -330,7 +350,11 @@ static size_t gridpage_serialise(struct gridpage *p_page, unsigned char *p_buf) 
 		ldata[0] = p_page->data[i].data;
 		ldata[1] = p_page->data[i+256].data;
 		ldata[2] = p_page->data[i+512].data;
-		if (!CELL_WILL_GET_A_NET(ldata[0]) && !CELL_WILL_GET_A_NET(ldata[1]) && !CELL_WILL_GET_A_NET(ldata[2])) {
+
+		if  (   !CELL_WILL_GET_A_NET(ldata[0])
+		    &&  !CELL_WILL_GET_A_NET(ldata[1])
+		    &&  !CELL_WILL_GET_A_NET(ldata[2])
+		    ) {
 			continue;
 		}
 
@@ -344,57 +368,57 @@ static size_t gridpage_serialise(struct gridpage *p_page, unsigned char *p_buf) 
 			assert(((addr_x | addr_y) & 0x80000000) == 0);
 			edgemode_bits  = (((uint64_t)addr_y) << 31) | addr_x;
 			edgemode_bits |= (edgemode_bits*8249772677985670961ull) & 0xC000000000000000;
-			write_u64(&(p_buf[count]), edgemode_bits);
+			write_u64(p_buf, edgemode_bits);
+			p_buf += 8;
 
-			/* 1-bit of merged layer indication */
+			/* writes 54 bits of edge data */
+			edgemode_bits = 0;
+			for (k = 0; k < 3; k++) {
+				for (j = 0; j < 6; j++) {
+					if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_NET_CONNECTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NET_CONNECTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_DELAY_INVERTED;
+					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED)
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_INVERTED;
+					else
+						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NO_ACTION;
+				}
+			}
+
+			/* 1-bit for merged layer indicator */
+			edgemode_bits <<= 1;
 			if (ldata[0] & GRIDCELL_BIT_MERGED_LAYERS) {
 				assert((ldata[1] & GRIDCELL_BIT_MERGED_LAYERS) != 0);
 				assert((ldata[2] & GRIDCELL_BIT_MERGED_LAYERS) != 0);
-				edgemode_bits = 1;
+				edgemode_bits |= 1;
 			} else {
 				assert((ldata[1] & GRIDCELL_BIT_MERGED_LAYERS) == 0);
 				assert((ldata[2] & GRIDCELL_BIT_MERGED_LAYERS) == 0);
-				edgemode_bits = 0;
 			}
 
-			/* 3-bits of force-net flags */
+			/* 3-bits for net info indicators */
 			for (k = 0; k < 3; k++) {
-				edgemode_bits = (edgemode_bits << 1) | ((ldata[k] & GRIDCELL_BIT_FORCE_NET) ? 1 : 0);
+				edgemode_bits = (edgemode_bits << 1) | ((ldata[k] & GRIDCELL_NET_LABEL_BIT) ? 1 : 0);
 			}
 
-			/* writes 54 bits */
-			for (k = 0; k < 3; k++) {
-				for (j = 0; j < 3; j++) {
-					if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_NET_CONNECTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NET_CONNECTED;
-					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_DELAY_INVERTED;
-					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_INVERTED;
-					else
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NO_ACTION;
-				}
-				for (; j < 6; j++) {
-					if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_NET_CONNECTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NET_CONNECTED;
-					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_DELAY_INVERTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_DELAY_INVERTED;
-					else if (GRIDCELL_CELL_EDGE_BITS_GET(ldata[k], j) == EDGE_LAYER_CONNECTION_RECEIVES_INVERTED)
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_RECEIVES_INVERTED;
-					else
-						edgemode_bits = (edgemode_bits << 3) | RW_EDGE_NO_ACTION;
-				}
-			}
+			/* HHHHHH00 00000000 00000000 11111111 11111111 11222222 22222222 2222Mabc
+			 * H = checksum
+			 * 0 = layer 0 edge bits
+			 * 1 = layer 1 edge bits
+			 * 2 = layer 2 edge bits
+			 * M = merged layer bit
+			 * abc = layer 0, 1 and 2 net label bits  */
 
-			/* 54+3+1=58 bits of cell information 6 bits of hash. */
+			/* 54+4=58 bits of cell information and 6 bits of hash. */
 			edgemode_bits |= (edgemode_bits*8249772677985670961ull) & 0xFC00000000000000;
-			write_u64(&(p_buf[count+8]), edgemode_bits);
+			write_u64(p_buf, edgemode_bits);
+			p_buf += 8;
 		}
 
-		count += 16;
-
+		count++;
 	}
-	return count >> 4;
+	return count;
 }
 
 struct gridpage_enumerator_item {
@@ -410,7 +434,7 @@ struct gridpage_enumerator {
 static void push_down(struct gridpage_enumerator *p_enumerator) {
 	do {
 		struct gridpage_enumerator_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]);
-		while (p_top->child_id < CELL_LOOKUP_NB && p_top->p_page->lookups[p_top->child_id] == NULL) {
+		while (p_top->child_id < CELL_LOOKUP_NB && p_top->p_page->ap_lookups[p_top->child_id] == NULL) {
 			p_top->child_id++;
 		}
 		if (p_top->child_id == CELL_LOOKUP_NB) {
@@ -418,7 +442,7 @@ static void push_down(struct gridpage_enumerator *p_enumerator) {
 		}
 		p_enumerator->stack_pos++;
 		p_enumerator->a_stack[p_enumerator->stack_pos].child_id = 0;
-		p_enumerator->a_stack[p_enumerator->stack_pos].p_page   = p_top->p_page->lookups[p_top->child_id];
+		p_enumerator->a_stack[p_enumerator->stack_pos].p_page   = p_top->p_page->ap_lookups[p_top->child_id];
 	} while (1);
 }
 
@@ -441,7 +465,7 @@ static struct gridpage *gridpage_enumerator_get(struct gridpage_enumerator *p_en
 			p_ret                    = p_top->p_page;
 			p_enumerator->stack_pos -= 1;
 		} else {
-			p_ret                    = p_top->p_page->lookups[p_top->child_id];
+			p_ret                    = p_top->p_page->ap_lookups[p_top->child_id];
 		}
 		if (p_enumerator->stack_pos >= 0) {
 			p_enumerator->a_stack[p_enumerator->stack_pos].child_id++;
@@ -475,7 +499,45 @@ static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buf
 	return 8 + num_total_cells*16;
 }
 
+static struct cellnetinfo *gridstate_get_cellnetinfo(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
+	struct cellnetinfo **pp_c    = &(p_grid->p_cell_info);
+	struct cellnetinfo  *p_c     = *pp_c;
+	uint32_t             page_x  = p_page_addr->x;
+	uint32_t             page_y  = p_page_addr->y;
+	uint64_t             page_id;
+	size_t               i;
 
+	assert(p_page_addr->z == 0 && "cellnetinfo always must apply to layer 0");
+
+	page_id = gridaddr_to_id(p_page_addr);
+
+	while (p_c != NULL) {
+		if (p_c->position.x == page_x && p_c->position.y == page_y)
+			return p_c;
+		pp_c    = &(p_c->ap_lookups[page_id & CELL_LOOKUP_MASK]);
+		p_c     = *pp_c;
+		page_id = page_id >> CELL_LOOKUP_BITS;
+	}
+
+	if (!permit_create)
+		return NULL;
+
+	if ((p_c = (struct cellnetinfo *)malloc(sizeof(*p_c))) == NULL)
+		return NULL;
+
+	for (i = 0; i < NUM_LAYERS; i++) {
+		p_c->aa_net_description[i][0] = '\0';
+		p_c->aa_net_name[i][0]        = '\0';
+	}
+	p_c->position.x        = page_x;
+	p_c->position.y        = page_y;
+	p_c->position.z        = 0;
+	for (i = 0; i < CELL_LOOKUP_NB; i++)
+		p_c->ap_lookups[i] = NULL;
+
+	*pp_c = p_c;
+	return p_c;
+}
 
 static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
 	struct gridpage **pp_c = &(p_grid->p_root);
@@ -492,7 +554,7 @@ static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const s
 	while (p_c != NULL) {
 		if (p_c->position.x == page_x && p_c->position.y == page_y)
 			return p_c;
-		pp_c    = &(p_c->lookups[page_id & CELL_LOOKUP_MASK]);
+		pp_c    = &(p_c->ap_lookups[page_id & CELL_LOOKUP_MASK]);
 		p_c     = *pp_c;
 		page_id = page_id >> CELL_LOOKUP_BITS;
 	}
@@ -503,8 +565,9 @@ static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const s
 	p_c->p_owner    = p_grid;
 	p_c->position.x = page_x;
 	p_c->position.y = page_y;
+	p_c->position.z = 0;
 	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		p_c->lookups[i] = NULL;
+		p_c->ap_lookups[i] = NULL;
 	for (i = 0; i < PAGE_XY_NB*PAGE_XY_NB*NUM_LAYERS; i++) {
 		p_c->data[i].data = i;
 	}
@@ -650,6 +713,9 @@ struct program_net {
 	uint32_t b_exists_in_a_cycle;
 	uint32_t serial_gates;
 	uint32_t gate_fanout;
+
+	uint32_t        nb_net_info_refs;
+	struct gridaddr net_info_cell_addr;
 
 };
 
@@ -823,9 +889,9 @@ static
 struct program_net *
 program_net_push(struct program *p_program) {
 	if (p_program->net_count >= p_program->net_alloc_count) {
-		struct program_net *p_new_nets;
+		struct program_net  *p_new_nets;
 		struct program_net **pp_new_netstack;
-		uint64_t           *p_new_data;
+		uint64_t            *p_new_data;
 		size_t newsz      = ((p_program->net_count*4)/3) & ~(size_t)0xff;
 		size_t data_words;
 		if (newsz < 1024)
@@ -908,7 +974,46 @@ static uint32_t *program_code_reserve(struct program *p_program) {
 	return &(p_program->p_code[p_program->code_count++]);
 }
 
-static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits) {
+static void move_single_cell(struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits, struct program_net *p_net) {
+	uint32_t new_index     = (*p_insidx)++;
+
+	assert((pp_list_base[idx]->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
+
+	if (pp_list_base[idx]->data & GRIDCELL_NET_LABEL_BIT) {
+		if (p_net->nb_net_info_refs++ == 0) {
+			(void)gridcell_get_gridpage_and_full_addr(pp_list_base[idx], &(p_net->net_info_cell_addr));
+		}
+	}
+
+	if (new_index != idx) {
+		struct gridcell *p_tmp  = pp_list_base[new_index];
+		pp_list_base[new_index] = pp_list_base[idx];
+		pp_list_base[idx]       = p_tmp;
+
+		assert((p_tmp->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
+		p_tmp->data = (p_tmp->data & ~GRIDCELL_PROGRAM_NET_ID_BITS) | GRIDCELL_PROGRAM_NET_ID_BITS_SET(idx);
+	}
+
+	pp_list_base[new_index]->data = (pp_list_base[new_index]->data & ~(GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_NET_ID_BITS)) | compute_flag_and_net_id_bits;
+}
+
+/* This function takes the cell with index "idx" and moves it into the current
+ * net group at position *p_insidx and then increments this position. If the
+ * cell at idx is part of a GRIDCELL_BIT_MERGED_LAYERS set, all cells above
+ * and below the given cell will also be moved into the group (*p_insidx will
+ * be incremented by the number of layers in this case).
+ * 
+ * Cells that happen to be in positions where the new cells need to exist will
+ * be swapped. The cell that has been moved (and will always be moved to a
+ * higher index) will have its net id updated to the new index.
+ * 
+ * Before this function is called, cells at idx will have their net ID set to
+ * idx. After this function is called, the net ID will be set to whatever is
+ * inside compute_flag_and_net_id_bits. So this function is what changes the
+ * net ID from representing a cell index - to being the actual net ID. */
+static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits, struct program_net *p_net) {
+	assert(GRIDCELL_PROGRAM_NET_ID_BITS_GET(pp_list_base[idx]->data) == idx);
+	
 	if (pp_list_base[idx]->data & GRIDCELL_BIT_MERGED_LAYERS) {
 		uint32_t         page_index_base, i;
 		struct gridpage *p_page = gridcell_get_page_and_index(pp_list_base[idx], &page_index_base);
@@ -919,42 +1024,16 @@ static void move_cell_and_layers(struct gridcell **pp_list_base, uint32_t idx, u
 		for (i = 0; i < NUM_LAYERS; i++) {
 			uint32_t page_index    = page_index_base | (i << 8);
 			uint64_t index_in_list = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_page->data[page_index].data);
-			uint32_t new_index     = (*p_insidx)++;
+
+			assert(pp_list_base[index_in_list] == &(p_page->data[page_index]));
 
 			/* if the merged layer bit is set on one layer, it must be set on all! */
 			assert(p_page->data[page_index].data & GRIDCELL_BIT_MERGED_LAYERS);
 
-			/* none of the layers are expected to have the busy bit set as we are only just about to set it. */
-			assert((p_page->data[page_index].data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
-
-			if (new_index != index_in_list) {
-				struct gridcell *p_tmp            = pp_list_base[new_index];
-				pp_list_base[new_index]           = pp_list_base[index_in_list];
-				pp_list_base[index_in_list]       = p_tmp;
-
-				/* todo: remember what this assert is for and write a comment. */
-				assert((p_tmp->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
-
-				p_tmp->data = (p_tmp->data & ~GRIDCELL_PROGRAM_NET_ID_BITS) | GRIDCELL_PROGRAM_NET_ID_BITS_SET(index_in_list);
-			}
-
-			pp_list_base[new_index]->data     = (pp_list_base[new_index]->data & ~(GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_NET_ID_BITS)) | compute_flag_and_net_id_bits;
+			move_single_cell(pp_list_base, index_in_list, p_insidx, compute_flag_and_net_id_bits, p_net);
 		}
 	} else {
-		uint32_t new_index     = (*p_insidx)++;
-
-		assert((pp_list_base[idx]->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
-
-		if (new_index != idx) {
-			struct gridcell *p_tmp  = pp_list_base[new_index];
-			pp_list_base[new_index] = pp_list_base[idx];
-			pp_list_base[idx]       = p_tmp;
-
-			assert((p_tmp->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0);
-			p_tmp->data = (p_tmp->data & ~GRIDCELL_PROGRAM_NET_ID_BITS) | GRIDCELL_PROGRAM_NET_ID_BITS_SET(idx);
-		}
-
-		pp_list_base[new_index]->data = (pp_list_base[new_index]->data & ~(GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_NET_ID_BITS)) | compute_flag_and_net_id_bits;
+		move_single_cell(pp_list_base, idx, p_insidx, compute_flag_and_net_id_bits, p_net);
 	}
 }
 
@@ -1011,8 +1090,8 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				 * list. We need it to be this for the next step. */
 				for (l = 0; l < 3; l++) {
 					int addr = j+l*PAGE_XY_NB*PAGE_XY_NB;
+					p_gp->data[addr].data &= ~GRIDCELL_PROGRAM_BITS; /* always clear program bits */
 					if (CELL_WILL_GET_A_NET(p_gp->data[addr].data)) {
-						p_gp->data[addr].data &= ~GRIDCELL_PROGRAM_BITS;
 						p_gp->data[addr].data |= GRIDCELL_PROGRAM_NET_ID_BITS_SET(num_cells);
 						num_cells++;
 						program_stack_push(p_program, &(p_gp->data[addr]));
@@ -1077,11 +1156,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			p_net->b_exists_in_a_cycle        = 0;
 			p_net->serial_gates               = 0;
 			p_net->gate_fanout                = 0;
+			p_net->nb_net_info_refs           = 0;
 			/* Initialise the state such that on the first increment, we will
 			 * move to cell 0, edge 0. */
 			p_net->current_solve_cell = (uint32_t)-1;
 			p_net->current_solve_edge = EDGE_DIR_NUM-1;
-			move_cell_and_layers(pp_list_base, group_pos, &group_end, compute_flag_and_net_id_bits);
+			move_cell_and_layers(pp_list_base, group_pos, &group_end, compute_flag_and_net_id_bits, p_net);
 			do {
 				int i;
 				assert((pp_list_base[group_pos]->data & GRIDCELL_PROGRAM_BITS) == compute_flag_and_net_id_bits);
@@ -1090,7 +1170,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 					if (ctype == EDGE_LAYER_CONNECTION_NET_CONNECTED) {
 						struct gridcell *p_neighbour = gridcell_get_edge_neighbour(pp_list_base[group_pos], i, 0);
 						if ((p_neighbour->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0) {
-							move_cell_and_layers(pp_list_base, GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_neighbour->data), &group_end, compute_flag_and_net_id_bits);
+							move_cell_and_layers(pp_list_base, GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_neighbour->data), &group_end, compute_flag_and_net_id_bits, p_net);
 						}
 					}
 				}
@@ -1243,8 +1323,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 								gridcell_get_edge_neighbour(p_stack_cell, p_stack_net->current_solve_edge, 0)->data |= GRIDCELL_PROGRAM_BROKEN_BIT_MASK(get_opposing_edge_id(p_stack_net->current_solve_edge));
 								p_stack_net->b_exists_in_a_cycle = 1;
 							}
-
-							num_broken_nets++;
 						} else if (p_neighbour_net->current_solve_cell != p_neighbour_net->cell_count) {
 							/* The net is not already in the stack and has not
 							 * been solved (the assert verifies everything is
@@ -1277,11 +1355,21 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			struct program_net *p_net = p_program->pp_netstack[p_program->net_count-1-i];
 			uint32_t j;
 			uint64_t new_id_mask = GRIDCELL_PROGRAM_NET_ID_BITS_SET(i) | (p_net->b_exists_in_a_cycle ? GRIDCELL_PROGRAM_BUSY_BIT : 0);
+			uint64_t multi_net_fail_mask = (p_net->nb_net_info_refs > 1) ? GRIDCELL_NET_LABEL_BIT : 0;
+
+			/* if the net has multiple net references, trigger failure */
+			if (p_net->b_exists_in_a_cycle || p_net->nb_net_info_refs > 1) {
+				num_broken_nets++;
+			}
+
 			for (j = 0; j < p_net->cell_count; j++) {
 				uint32_t         cell_idx = p_net->first_cell_stack_index + j;
 				struct gridcell *p_cell = (struct gridcell *)p_program->pp_stack[cell_idx];
 				assert(GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell->data) == p_net->net_id);
-				p_cell->data = (p_cell->data & ~(GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BUSY_BIT)) | new_id_mask;
+				p_cell->data =
+					(p_cell->data & ~(GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT)) |
+					new_id_mask |
+					((p_cell->data & multi_net_fail_mask) ? GRIDCELL_PROGRAM_MULTI_NAME_BIT : 0);
 			}
 			p_net->net_id = i;
 		}
@@ -1426,12 +1514,6 @@ struct plot_grid_state {
 	float aa_the_snake[NUM_SNAKE_POINTS][2];
 #endif
 
-};
-
-struct highlighted_cell {
-	struct gridaddr addr;
-	ImVec2          pos_in_cell;
-	
 };
 
 static void vmpyadd(float *p_x, float *p_y, float x2, float y2, float offsetx, float offsety) {
@@ -1767,8 +1849,13 @@ draw_inverted_arrow(float centre_x, float centre_y, float pre_offset_x, float sc
 	p_list->AddConvexPolyFilled(a_points, 3, colour);
 }
 
+struct prop_window_state {
+	bool            b_show_prop_window;
+	struct gridaddr prop_addr_l0;
 
-void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state *p_state, struct program *p_prog) {
+};
+
+void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state *p_state, struct program *p_prog, struct prop_window_state *p_prop_window) {
 #if 0
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -1795,10 +1882,16 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	struct layer_edge_iterator      edge_iter;
 	const struct layer_edge_info   *p_edge_info;
 
-	struct gridaddr                 hovered_addr;
+	struct gridaddr                 hovered_cell_addr;
 	const struct gridcell          *p_hovered_cell = NULL;
+	int                             b_hovered_on_edge = 0;
 
 	int b_real_click_occured = 0;
+	
+	/* goes non-zero when a click occurs that is not handled by any other
+	 * handler in the cell. */
+	int             b_non_salient_position_click = 0;
+	struct gridaddr non_salient_click_addr_l0;
 
 	uint64_t glfw_ticks = glfwGetTimerValue();
 	uint64_t glfw_ticks_per_sec = glfwGetTimerFrequency();
@@ -1810,9 +1903,9 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	int detail_alpha   = (int)((radius - 6.0f)*25.0f); /* at 16 it's fully visible, at 6 it's fully gone */
 	int overview_alpha = (int)((12 - radius)*43.0f);    /* at 6 it's fully visible, at 12 it's fully gone */
 
-	hovered_addr.x = 0;
-	hovered_addr.y = 0;
-	hovered_addr.z = 0;
+	hovered_cell_addr.x = 0x40000000;
+	hovered_cell_addr.y = 0x40000000;
+	hovered_cell_addr.z = 0x40000000;
 
 	if (detail_alpha < 0)
 		detail_alpha = 0;
@@ -1854,7 +1947,9 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 			p_state->bl_x = bl_x;
 			p_state->bl_y = bl_y;
 
+			/* note that this implies that the cursor is still hovered. */
 			b_real_click_occured = !p_state->b_mouse_down_pos_changed;
+			b_non_salient_position_click = b_real_click_occured;
 		}
 	}
 
@@ -1895,12 +1990,16 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 					program_compile(p_prog, p_st);
 				}
 			}
+			b_non_salient_position_click = 0;
 		}
 	}
 
 	/* Handle centre clicks and double clicks. */
 	visible_cell_iterator_init(&iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
 	while ((p_info = visible_cell_iterator_next(&iter)) != NULL) {
+		if (p_info->b_cursor_in_cell) {
+			non_salient_click_addr_l0 = p_info->addr_l0;
+		}
 		if (p_info->b_cursor_in_cell && b_real_click_occured) {
 			if (g.IO.KeyShift) {
 				/* Clear all cell connections. */
@@ -1918,6 +2017,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 					/* todo - only do this if something changed. */
 					program_compile(p_prog, p_st);
 				}
+				b_non_salient_position_click = 0;
 			} else {
 				/* Toggle layer fusing. */
 				float x = p_info->cursor_relative_to_centre_x;
@@ -1928,9 +2028,17 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 						gridcell_are_layers_fused_toggle(p_cell);
 						program_compile(p_prog, p_st);
 					}
+					b_non_salient_position_click = 0;
 				}
 			}
 		}
+	}
+
+	if (b_non_salient_position_click) {
+		assert(non_salient_click_addr_l0.z == 0);
+		p_prop_window->b_show_prop_window = true;
+		p_prop_window->prop_addr_l0       = non_salient_click_addr_l0;
+
 	}
 
 	if (program_is_valid(p_prog)) {
@@ -1947,6 +2055,29 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		float            inner_radius = radius * 0.95f;
 		struct gridcell *p_cell_l0 = gridstate_get_gridcell(p_st, &(p_info->addr_l0), 0);
 		ImVec2           a_points[6];
+		int b_labeled =
+			(  (p_cell_l0 != NULL)
+			&& (  (p_cell_l0[0*256].data & GRIDCELL_NET_LABEL_BIT)
+			   || (p_cell_l0[1*256].data & GRIDCELL_NET_LABEL_BIT)
+			   || (p_cell_l0[2*256].data & GRIDCELL_NET_LABEL_BIT)
+			   )
+			);
+		int b_broken_labels =
+			(  (p_cell_l0 != NULL)
+			&& (  (p_cell_l0[0*256].data & GRIDCELL_PROGRAM_MULTI_NAME_BIT)
+			   || (p_cell_l0[1*256].data & GRIDCELL_PROGRAM_MULTI_NAME_BIT)
+			   || (p_cell_l0[2*256].data & GRIDCELL_PROGRAM_MULTI_NAME_BIT)
+			   )
+			);
+		int b_cell_in_labeled_net =
+			(  (p_cell_l0 != NULL)
+			&& program_is_valid(p_prog)
+			&& (  (CELL_WILL_GET_A_NET(p_cell_l0[0*256].data) && p_prog->pp_netstack[p_prog->net_count-1-GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell_l0[0*256].data)]->nb_net_info_refs > 0)
+			   || (CELL_WILL_GET_A_NET(p_cell_l0[1*256].data) && p_prog->pp_netstack[p_prog->net_count-1-GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell_l0[1*256].data)]->nb_net_info_refs > 0)
+			   || (CELL_WILL_GET_A_NET(p_cell_l0[2*256].data) && p_prog->pp_netstack[p_prog->net_count-1-GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_cell_l0[2*256].data)]->nb_net_info_refs > 0)
+			   )
+			);
+
 
 		a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
 		a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
@@ -1955,6 +2086,34 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
 		a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
 		p_list->AddConvexPolyFilled(a_points, 6, ImColor(255, 255, 255, 255));
+
+		inner_radius *= 0.8f;
+
+		if (b_broken_labels) {
+			a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
+			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[3] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
+			a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			p_list->AddConvexPolyFilled(a_points, 6, ImColor((int)(192 - animation_frame_sin*48), (int)(192 - animation_frame_sin*48), (int)(96 - animation_frame_sin*48), 255));
+		} else if (b_labeled) {
+			a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
+			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[3] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
+			a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			p_list->AddConvexPolyFilled(a_points, 6, ImColor(255, 255, 96, 255));
+		} else if (b_cell_in_labeled_net) {
+			a_points[0] = ImVec2(p_info->centre_pixel_x - inner_radius,      p_info->centre_pixel_y);
+			a_points[1] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[2] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y - SQRT3_4*inner_radius);
+			a_points[3] = ImVec2(p_info->centre_pixel_x + inner_radius,      p_info->centre_pixel_y);
+			a_points[4] = ImVec2(p_info->centre_pixel_x + 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			a_points[5] = ImVec2(p_info->centre_pixel_x - 0.5f*inner_radius, p_info->centre_pixel_y + SQRT3_4*inner_radius);
+			p_list->AddConvexPolyFilled(a_points, 6, ImColor(255, 255, 192, 255));
+		}
 
 		if (p_cell_l0 != NULL && !program_is_valid(p_prog)) {
 			int i;
@@ -1981,6 +2140,12 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 					sp++;
 				}
 			}
+		}
+
+		/* ensure the address gets initialised to something. This way, if
+		 * p_hovered_cell==NULL, we still have an x, y address. */
+		if (p_info->b_cursor_in_cell) {
+			hovered_cell_addr = p_info->addr_l0;
 		}
 	}
 
@@ -2073,38 +2238,40 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	/* 3) Draw status and cursor over stuff */
 	layer_edge_iterator_init(&edge_iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
 	while ((p_edge_info = layer_edge_iterator_next(&edge_iter)) != NULL) {
-		if (p_edge_info->b_mouse_in_addr) {
-			hovered_addr = p_edge_info->addr;
-		}
-
 		/* Render edge connector hovers */
-		if (p_edge_info->b_mouse_over_either && detail_alpha > 0) {
-			float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
-			float ay = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* small negative numbers */
-			float bx = ax;
-			float by = ay - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE*2;
-			float rx = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
-			float ry = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
-			ImU32 layer_colour = ImColor
-				(((p_edge_info->layer == 0) ? 150 : 100)
-				,((p_edge_info->layer == 1) ? 150 : 100)
-				,((p_edge_info->layer == 2) ? 150 : 100)
-				,(detail_alpha*64)/256
-				);
-			int i;
-			ImVec2 a_points[34];
-			for (i = 0; i < 17; i++) {
-				float arch_cos = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*cosf(i*((float)M_PI)/16.0f);
-				float arch_sin = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*sinf(i*((float)M_PI)/16.0f);
-				a_points[i]    = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, ax + arch_cos, ay + arch_sin, rx, ry);
-				a_points[i+17] = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, bx - arch_cos, by - arch_sin, rx, ry);
+		if (p_edge_info->b_mouse_over_either) {
+			if (detail_alpha > 0) {
+				float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
+				float ay = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* small negative numbers */
+				float bx = ax;
+				float by = ay - HEXAGON_INNER_TO_OUTER_APOTHEM_DISTANCE*2;
+				float rx = AA_EDGE_ROTATORS[p_edge_info->edge][0]*radius;
+				float ry = AA_EDGE_ROTATORS[p_edge_info->edge][1]*radius;
+				ImU32 layer_colour = ImColor
+					(((p_edge_info->layer == 0) ? 150 : 100)
+					,((p_edge_info->layer == 1) ? 150 : 100)
+					,((p_edge_info->layer == 2) ? 150 : 100)
+					,(detail_alpha*64)/256
+					);
+				int i;
+				ImVec2 a_points[34];
+				for (i = 0; i < 17; i++) {
+					float arch_cos = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*cosf(i*((float)M_PI)/16.0f);
+					float arch_sin = HEXAGON_INNER_CENTRE_EDGE_TO_OTHER_LAYER_CENTRE_DISTANCE*0.5f*sinf(i*((float)M_PI)/16.0f);
+					a_points[i]    = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, ax + arch_cos, ay + arch_sin, rx, ry);
+					a_points[i+17] = imvec2_cmac(p_edge_info->centre_pixel_x, p_edge_info->centre_pixel_y, bx - arch_cos, by - arch_sin, rx, ry);
+				}
+				p_list->AddConvexPolyFilled(a_points, 34, layer_colour);
 			}
-			p_list->AddConvexPolyFilled(a_points, 34, layer_colour);
 
 			if (p_edge_info->b_mouse_in_addr) {
-				p_hovered_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
+				p_hovered_cell    = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
+				hovered_cell_addr = p_edge_info->addr;
+				b_hovered_on_edge = 1;
 			} else {
-				p_hovered_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr_other), 0);
+				p_hovered_cell    = gridstate_get_gridcell(p_st, &(p_edge_info->addr_other), 0);
+				hovered_cell_addr = p_edge_info->addr_other;
+				b_hovered_on_edge = 1;
 			}
 		}
 
@@ -2177,14 +2344,50 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize()*35.0f);
 
-		ImGui::Text("Address (%ld, %ld)", (long)((int32_t)hovered_addr.x) - (long)0x40000000, (long)((int32_t)hovered_addr.y) - (long)0x40000000);
+		ImGui::Text("Address           (%ld, %ld)", (long)((int32_t)hovered_cell_addr.x) - (long)0x40000000, (long)((int32_t)hovered_cell_addr.y) - (long)0x40000000);
 
-		if (p_hovered_cell != NULL && program_is_valid(p_prog) && CELL_WILL_GET_A_NET(p_hovered_cell->data)) {
-			uint32_t net_id = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_hovered_cell->data);
-			assert(net_id < p_prog->net_count);
-			ImGui::Text("Net ID            %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->net_id);
-			ImGui::Text("Net serial factor %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->serial_gates);
-			ImGui::Text("Net gate fanout   %lu", (unsigned long)p_prog->pp_netstack[p_prog->net_count-1-net_id]->gate_fanout);
+		if (b_hovered_on_edge) {
+			static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
+			ImGui::Text("Layer             %s\n", AP_LAYER_NAMES[hovered_cell_addr.z]);
+		}
+		
+		if (p_hovered_cell != NULL) {
+			if (program_is_valid(p_prog) && CELL_WILL_GET_A_NET(p_hovered_cell->data)) {
+				uint32_t            net_id = GRIDCELL_PROGRAM_NET_ID_BITS_GET(p_hovered_cell->data);
+				struct program_net *p_net = (assert(net_id < p_prog->net_count), p_prog->pp_netstack[p_prog->net_count-1-net_id]);
+				const char         *p_net_name = NULL;
+				const char         *p_net_description = NULL;
+
+				if (p_net->nb_net_info_refs) {
+					struct gridaddr tmp_addr;
+					struct cellnetinfo *p_net_info;
+					/* if the program is valid (which we tested before), this can
+					* either be zero or one. */
+					assert(p_net->nb_net_info_refs == 1);
+
+					tmp_addr = p_net->net_info_cell_addr;
+					tmp_addr.z = 0;
+					if ((p_net_info = gridstate_get_cellnetinfo(p_st, &tmp_addr, 0)) != NULL) {
+						p_net_name = p_net_info->aa_net_name[p_net->net_info_cell_addr.z];
+						if (p_net_name[0] == '\0')
+							p_net_name = NULL;
+						p_net_description = p_net_info->aa_net_description[p_net->net_info_cell_addr.z];
+						if (p_net_description[0] == '\0')
+							p_net_description = NULL;
+					}
+				}
+
+				if (p_net_name == NULL) {
+					ImGui::Text("Net ID            %lu", (unsigned long)p_net->net_id);
+				} else {
+					ImGui::Text("Net ID            %lu (%s)", (unsigned long)p_net->net_id, p_net_name);
+				}
+				if (p_net_description != NULL) {
+					ImGui::Text("Net Description   %s", p_net_description);
+				}
+				ImGui::Text("Net serial factor %lu", (unsigned long)p_net->serial_gates);
+				ImGui::Text("Net gate fanout   %lu", (unsigned long)p_net->gate_fanout);
+			}
 		}
 
 		ImGui::PopTextWrapPos();
@@ -2192,12 +2395,47 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	}
 }
 
+#if 0
+/* We have tests and tests have grids associated with them that are their accepted solutions.
+ * 
+ * The test is executed against a grid and if the test passes, the grid is copied into the
+ * accepted solutions.
+ * 
+ * The solution may be duplicated into a sandbox grid.
+ * 
+ * Sandbox grids may also be duplicated.*/
+
+struct test {
+	const char *p_name;
 
 
+};
+#endif
+
+static void update_cell_net_labels(struct gridstate *p_gs, struct program *p_prog, const struct gridaddr *p_addr, const char *p_name, const char *p_description) {
+	struct gridcell *p_cell;
+	if (p_name[0] == '\0' && p_description[0] == '\0') {
+		if ((p_cell = gridstate_get_gridcell(p_gs, p_addr, 0)) != NULL) {
+			p_cell->data &= ~(uint64_t)GRIDCELL_NET_LABEL_BIT;
+		}
+	} else {
+		if ((p_cell = gridstate_get_gridcell(p_gs, p_addr, 1)) != NULL) {
+			p_cell->data |= GRIDCELL_NET_LABEL_BIT;
+		}
+	}
+	program_compile(p_prog, p_gs);
+}
 
 int main(int argc, char **argv) {
-	struct gridstate  gs;
+	struct gridstate         gs;
+	struct prop_window_state pws;
+
 	gridstate_init(&gs);
+
+	pws.b_show_prop_window = false;
+	pws.prop_addr_l0.x = 0x40000000;
+	pws.prop_addr_l0.y = 0x40000000;
+	pws.prop_addr_l0.z = 0;
 
 	// Setup window
 	glfwSetErrorCallback(glfw_error_callback);
@@ -2288,7 +2526,7 @@ int main(int argc, char **argv) {
 			ImGui::End();
 		}
 #endif
-		plot_grid(&gs, ImVec2(window_w, window_h), &plot_state, &prog);
+		plot_grid(&gs, ImVec2(window_w, window_h), &plot_state, &prog, &pws);
 
 		if (ImGui::BeginMainMenuBar()) {
 			if (ImGui::BeginMenu("File")) {
@@ -2345,6 +2583,42 @@ int main(int argc, char **argv) {
 				}
 			}
 			ImGui::End();
+		}
+
+		if (pws.b_show_prop_window) {
+			struct cellnetinfo *p_cinfo = gridstate_get_cellnetinfo(&gs, &(pws.prop_addr_l0), 1);
+			if (p_cinfo != NULL && ImGui::Begin("Cell Properties", &(pws.b_show_prop_window))) {
+				struct gridaddr  tmp_addr = pws.prop_addr_l0;
+				int b_text_changed;
+
+				ImGui::Text("Cell address (%ld, %ld)", ((long)pws.prop_addr_l0.x) - (long)0x40000000, ((long)pws.prop_addr_l0.y) - (long)0x40000000);
+				
+				b_text_changed  = ImGui::InputText("L0 net name", p_cinfo->aa_net_name[0], sizeof(p_cinfo->aa_net_name[0]));
+				b_text_changed |= ImGui::InputTextMultiline("L0 net description", p_cinfo->aa_net_description[0], sizeof(p_cinfo->aa_net_description[0]));
+
+				if (b_text_changed) {
+					tmp_addr.z = 0;
+					update_cell_net_labels(&gs, &prog, &tmp_addr, p_cinfo->aa_net_name[0], p_cinfo->aa_net_description[0]);
+				}
+
+				b_text_changed  = ImGui::InputText("L1 net name", p_cinfo->aa_net_name[1], sizeof(p_cinfo->aa_net_name[1]));
+				b_text_changed |= ImGui::InputTextMultiline("L1 net description", p_cinfo->aa_net_description[1], sizeof(p_cinfo->aa_net_description[1]));
+				
+				if (b_text_changed) {
+					tmp_addr.z = 1;
+					update_cell_net_labels(&gs, &prog, &tmp_addr, p_cinfo->aa_net_name[1], p_cinfo->aa_net_description[1]);
+				}
+
+				b_text_changed  = ImGui::InputText("L2 net name", p_cinfo->aa_net_name[2], sizeof(p_cinfo->aa_net_name[2]));
+				b_text_changed |= ImGui::InputTextMultiline("L2 net description", p_cinfo->aa_net_description[2], sizeof(p_cinfo->aa_net_description[2]));
+
+				if (b_text_changed) {
+					tmp_addr.z = 2;
+					update_cell_net_labels(&gs, &prog, &tmp_addr, p_cinfo->aa_net_name[2], p_cinfo->aa_net_description[2]);
+				}
+
+				ImGui::End();
+			}
 		}
 
 
@@ -2443,8 +2717,8 @@ static int grid_save_rec(FILE *p_f, struct gridpage *p_page) {
 	}
 
 	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		if (p_page->lookups[i] != NULL)
-			if (grid_save_rec(p_f, p_page->lookups[i]))
+		if (p_page->ap_lookups[i] != NULL)
+			if (grid_save_rec(p_f, p_page->ap_lookups[i]))
 				return 1;
 
 	return 0;
