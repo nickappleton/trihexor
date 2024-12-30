@@ -107,6 +107,7 @@ static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
 #define GRIDCELL_PROGRAM_BUSY_BIT               (0x0000000200000000ull) /* Indicates that the cell itself is part of a dependency loop */
 #define GRIDCELL_PROGRAM_MULTI_NAME_BIT         (0x0000000100000000ull) /* Indicates that the net which this cell is part of has been named in multiple locations and this is one of the cells */
 #define GRIDCELL_PROGRAM_NO_MERGED_BIT          (0x0000000080000000ull)
+#define GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT     (0x0000000040000000ull)
 #define GRIDCELL_NET_LABEL_BIT                  (0x0000000020000000ull)
 #define GRIDCELL_BIT_MERGED_LAYERS              (0x0000000010000000ull)
 
@@ -116,12 +117,13 @@ static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
 
 /*
  * 63       55       47       39       31       23       15       7
- * PPPPPPPP PPPPPPPP PPPPPPPP BBBBBB12 3_NMEEEE EEEEEEEE EEEEEEAA AAAAAAAA
+ * PPPPPPPP PPPPPPPP PPPPPPPP BBBBBB12 34NMEEEE EEEEEEEE EEEEEEAA AAAAAAAA
  * 
  * A = 10 bits of address into gridpage
  * E = 18 bits of edge properties
  * N = 1 GRIDCELL_NET_LABEL_BIT bit
  * M = 1 GRIDCELL_BIT_MERGED_LAYERS bit
+ * 4 = 1 GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT bit set after a build error when a net has a name used by another net
  * 3 = 1 GRIDCELL_PROGRAM_NO_MERGED_BIT bit set after build error when a net has a defined name but no merged layer cell
  * 2 = 1 GRIDCELL_PROGRAM_MULTI_NAME_BIT bit set after build error on multiple cells in a single net defining a label
  * 1 = 1 GRIDCELL_PROGRAM_BUSY_BIT bit (or cell-involved-in-cycle-error bit after build error)
@@ -130,7 +132,7 @@ static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
  * 
  * Maybe we need a NAMED_NET error bit for when multiple cells are tagged with net naming information? */
 
-#define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT)
+#define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT)
 
 
 /* tests if any cell edges are not disconnected, the layers are merged or the
@@ -1022,6 +1024,10 @@ static void move_single_cell(struct gridstate *p_gridstate, struct gridcell **pp
 			assert(p_info != NULL);
 			p_net->p_net_name        = p_info->aa_net_name[layer];
 			p_net->p_net_description = p_info->aa_net_description[layer];
+			if (p_net->p_net_name[0] == '\0')
+				p_net->p_net_name = NULL;
+			if (p_net->p_net_description[0] == '\0')
+				p_net->p_net_description = NULL;
 		} else {
 			p_net->p_net_name        = NULL;
 			p_net->p_net_description = NULL;
@@ -1080,6 +1086,25 @@ static void move_cell_and_layers(struct gridstate *p_gridstate, struct gridcell 
 	}
 }
 
+static int net_label_compare(const void *p_a, const void *p_b) {
+	struct program_net *p_n1 = *(struct program_net **)p_a;
+	struct program_net *p_n2 = *(struct program_net **)p_b;
+	if (p_n1->p_net_name == NULL && p_n2->p_net_name == NULL) {
+		if (p_n1->p_net_description == NULL && p_n2->p_net_description == NULL)
+			return 0;
+		if (p_n1->p_net_description == NULL)
+			return 1;
+		if (p_n2->p_net_description == NULL)
+			return -1;
+		return strcmp(p_n1->p_net_description, p_n2->p_net_description);
+	}
+	if (p_n1->p_net_name == NULL)
+		return 1;
+	if (p_n2->p_net_name == NULL)
+		return -1;
+	return strcmp(p_n1->p_net_name, p_n2->p_net_name);
+}
+
 #define SQRT3   (1.732050807568877f)
 #define SQRT3_4 (SQRT3*0.5f)
 
@@ -1092,7 +1117,7 @@ static void move_cell_and_layers(struct gridstate *p_gridstate, struct gridcell 
  * data prior to execution. */
 static int program_compile(struct program *p_program, struct gridstate *p_gridstate) {
 	size_t            num_cells;
-	int               num_broken_nets = 0;
+	int               b_program_busted = 0;
 
 	p_program->stack_count        = 0;
 	p_program->net_count          = 0;
@@ -1402,11 +1427,10 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			uint32_t j;
 			uint64_t new_id_mask = GRIDCELL_PROGRAM_NET_ID_BITS_SET(i) | (p_net->b_exists_in_a_cycle ? GRIDCELL_PROGRAM_BUSY_BIT : 0);
 			uint64_t multi_net_fail_mask = (p_net->nb_net_info_refs > 1) ? GRIDCELL_NET_LABEL_BIT : 0;
-			int      b_net_busted = 0;
 
 			/* if the net has multiple net references, trigger failure */
 			if (p_net->b_exists_in_a_cycle || p_net->nb_net_info_refs > 1) {
-				b_net_busted = 1;
+				b_program_busted = 1;
 			} else if (p_net->p_net_description != NULL || p_net->p_net_name != NULL) {
 				program_named_net_push(p_program, p_net);
 			}
@@ -1422,12 +1446,8 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 				if (j == p_net->cell_count) {
 					/* There were no cells with the merged layer bit set. */
 					new_id_mask |= GRIDCELL_PROGRAM_NO_MERGED_BIT;
-					b_net_busted = 1;
+					b_program_busted = 1;
 				}
-			}
-
-			if (b_net_busted) {
-				num_broken_nets++;
 			}
 
 			for (j = 0; j < p_net->cell_count; j++) {
@@ -1441,6 +1461,25 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			}
 			p_net->net_id = i;
 		}
+
+		/* sort the labelled nets. */
+		qsort(p_program->pp_labelled_nets, p_program->labelled_net_count, sizeof(struct program_net *), net_label_compare);
+
+		/* find any duplicate net IDs and mark those nets as busted. */
+		for (i = 1; i < p_program->labelled_net_count; i++) {
+			/* as soon as we hit a null, the rest of the names are all null
+			 * (and only descriptions are present which we don't care about). */
+			if (p_program->pp_labelled_nets[i]->p_net_name == NULL)
+				break;
+			/* test for a common name */
+			if (strcmp(p_program->pp_labelled_nets[i]->p_net_name, p_program->pp_labelled_nets[i-1]->p_net_name) == 0) {
+				/* set failure bits on busted cells */
+				gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i]->net_info_cell_addr), 0)->data   |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
+				gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i-1]->net_info_cell_addr), 0)->data |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
+				b_program_busted = 1;
+			}
+		}
+
 	}
 
 #if PROGRAM_DEBUG
@@ -1469,9 +1508,8 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 #endif
 
 	/* Early exit before we write our solver code. */
-	if (num_broken_nets) {
-		return num_broken_nets;
-	}
+	if (b_program_busted)
+		return b_program_busted;
 
 	/* Fun time - build the program. At this point, everything is totally
 	 * great. pp_netstack is reverse ordered by dependencies. We have no loops
@@ -2186,9 +2224,9 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 			);
 		int b_broken_labels =
 			(  (p_cell_l0 != NULL)
-			&& (  (p_cell_l0[0*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT))
-			   || (p_cell_l0[1*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT))
-			   || (p_cell_l0[2*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT))
+			&& (  (p_cell_l0[0*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT))
+			   || (p_cell_l0[1*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT))
+			   || (p_cell_l0[2*PAGE_CELLS_PER_LAYER].data & (GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT))
 			   )
 			);
 		int b_cell_in_labelled_net =
@@ -2441,7 +2479,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 				int b_busted;
 				int b_interesting;
 
-				for (i = 0; i < NUM_LAYERS && ((p_cell - i*PAGE_CELLS_PER_LAYER)->data & GRIDCELL_PROGRAM_BUSY_BIT) == 0; i++);
+				for (i = 0; i < NUM_LAYERS && ((p_cell - i*PAGE_CELLS_PER_LAYER)->data & (GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT)) == 0; i++);
 				b_busted      = (i != NUM_LAYERS);
 
 				for (i = 0; i < NUM_LAYERS && CELL_WILL_GET_A_NET((p_cell - i*PAGE_CELLS_PER_LAYER)->data) == 0; i++);
@@ -2497,10 +2535,10 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 					ImGui::Text("%s %s", a_buf, (num_errors > 1) ? "define names for nets which have already been named" : "defines a name for a net which has already been named");
 				if ((num_errors = glue_error_names(a_buf, p_cell_l0, GRIDCELL_PROGRAM_NO_MERGED_BIT)) > 0)
 					ImGui::Text("%s %s", a_buf, (num_errors > 1) ? "are part of named nets that do not contain merged cells" : "is part of a named net that does not contain any merged cells");
+				if ((num_errors = glue_error_names(a_buf, p_cell_l0, GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT)) > 0)
+					ImGui::Text("%s %s", a_buf, (num_errors > 1) ? "define net names already used by other nets" : "defines a net name used by another net");
 			}
 		}
-
-
 
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
@@ -2765,7 +2803,9 @@ int main(int argc, char **argv) {
 					if (prog.pp_labelled_nets[idx]->p_net_name) {
 						uint32_t net_id = prog.pp_labelled_nets[idx]->net_id;
 						bool b_force_active = (prog.p_data_init[net_id >> 6] & BIT_MASKS[net_id & 0x3F]) != 0;
+						ImGui::PushID(&(prog.pp_labelled_nets[idx]));
 						ImGui::Checkbox("##netidbox", &b_force_active);
+						ImGui::PopID();
 						if (b_force_active) {
 							prog.p_data_init[net_id >> 6] |= BIT_MASKS[net_id & 0x3F];
 						} else {
