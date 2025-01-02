@@ -9,13 +9,6 @@
 #include <GLFW/glfw3.h>
 #include <math.h>
 
-// [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
-// To link with VS2010-era libraries, VS2015+ requires linking with legacy_stdio_definitions.lib, which we do using this pragma.
-// Your own project should not be affected, as you are likely to link with a newer binary of GLFW that is adequate for your version of Visual Studio.
-#if defined(_MSC_VER) && (_MSC_VER >= 1900) && !defined(IMGUI_DISABLE_WIN32_FUNCTIONS)
-#pragma comment(lib, "legacy_stdio_definitions")
-#endif
-
 static void glfw_error_callback(int error, const char* description)
 {
 	fprintf(stderr, "Glfw Error %d: %s\n", error, description);
@@ -110,8 +103,7 @@ static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
 #define GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT     (0x0000000040000000ull)
 #define GRIDCELL_NET_LABEL_BIT                  (0x0000000020000000ull)
 #define GRIDCELL_BIT_MERGED_LAYERS              (0x0000000010000000ull)
-
-/* 6*3 bits = 18 bits */
+#define GRIDCELL_CELL_EDGE_BITS_MASK            (0x000000000FFFFC00ull) /* 18-bits */
 #define GRIDCELL_CELL_EDGE_BITS_GET(x_, edge_id_)         ((((uint64_t)(x_)) >> (10 + 3*(edge_id_))) & 0x7)
 #define GRIDCELL_CELL_EDGE_BITS_SET(edge_id_, edge_type_) (((uint64_t)(edge_type_)) << (10 + 3*(edge_id_)))
 
@@ -129,17 +121,16 @@ static const char *AP_LAYER_NAMES[NUM_LAYERS] = {"Red", "Green", "Blue"};
  * 1 = 1 GRIDCELL_PROGRAM_BUSY_BIT bit (or cell-involved-in-cycle-error bit after build error)
  * B = 6 bits of edge-involved-in-cycle error bits
  * P = 24 bits of net identifier
- * 
- * Maybe we need a NAMED_NET error bit for when multiple cells are tagged with net naming information? */
+ */
 
 #define GRIDCELL_PROGRAM_BITS        (GRIDCELL_PROGRAM_NET_ID_BITS|GRIDCELL_PROGRAM_BROKEN_BITS|GRIDCELL_PROGRAM_BUSY_BIT|GRIDCELL_PROGRAM_MULTI_NAME_BIT|GRIDCELL_PROGRAM_NO_MERGED_BIT|GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT)
 
 
 /* tests if any cell edges are not disconnected, the layers are merged or the
- * NAMED_NET bit is set. if this is set, the cell is guaranteed to have a net
- * assigned to it. If it is not set, the cell definitely will not have a net
- * assigned to it. */
-#define CELL_WILL_GET_A_NET(data_)   (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_NET_LABEL_BIT | 0xFFFFC00)) != 0)
+ * GRIDCELL_NET_LABEL_BIT bit is set. if any of these conditions are true, the
+ * cell is guaranteed to have a net assigned to it. If it is not set, the cell
+ * definitely will not have a net assigned to it. */
+#define CELL_WILL_GET_A_NET(data_)   (((data_) & (GRIDCELL_BIT_MERGED_LAYERS | GRIDCELL_NET_LABEL_BIT | GRIDCELL_CELL_EDGE_BITS_MASK)) != 0)
 
 
 /* How the grid is layed out:
@@ -233,7 +224,7 @@ struct gridcell {
 	 *
 	 * This bit indicates that the cell defines a name or description for the
 	 * net it is part of. This bit guarantees the creation of a net.
-	 * 29    - NAMED_NET
+	 * 29    - GRIDCELL_NET_LABEL_BIT
 	 *
 	 * This bit is used as a temporary while creating a program. Once the
 	 * program has been written this bit will be cleared. If the program
@@ -268,7 +259,7 @@ struct gridpage {
 #define MAX_NET_DESCRIPTION_LENGTH (8192)
 
 struct cellnetinfo {
-	struct gridaddr     position;          /* key and full position of cell (with z==0). this cell must have the MERGED_LAYERS and NAMED_NET bits set. */
+	struct gridaddr     position;          /* key and full position of cell (with z==0). this cell must have the GRIDCELL_BIT_MERGED_LAYERS and GRIDCELL_NET_LABEL_BIT bits set. */
 	struct cellnetinfo *ap_lookups[CELL_LOOKUP_NB];
 	char                aa_net_name[NUM_LAYERS][MAX_NET_NAME_LENGTH];        /* unique name for the net containing this cell. */
 	char                aa_net_description[NUM_LAYERS][MAX_NET_DESCRIPTION_LENGTH]; /* description for the net which contains this cell. */
@@ -750,6 +741,7 @@ struct program {
 
 	/* named net list */
 	struct program_net **pp_labelled_nets;
+	size_t               named_net_count;
 	size_t               labelled_net_count;
 	size_t               labelled_net_alloc_count;
 
@@ -945,6 +937,7 @@ static void program_init(struct program *p_program) {
 	p_program->stack_count        = 0;
 	p_program->net_count          = 0;
 	p_program->labelled_net_count = 0;
+	p_program->named_net_count    = 0;
 	p_program->stacked_cell_count = 0;
 	p_program->substrate_area     = 0;
 	p_program->worst_logic_chain  = 0;
@@ -964,7 +957,7 @@ static int program_is_valid(struct program *p_program) {
 	return (p_program->net_count == 0) || (p_program->code_count > 0);
 }
 
-static void program_named_net_push(struct program *p_program, struct program_net *p_ptr) {
+static void program_labelled_net_push(struct program *p_program, struct program_net *p_ptr) {
 	if (p_program->labelled_net_count >= p_program->labelled_net_alloc_count) {
 		size_t               newsz = ((p_program->labelled_net_alloc_count*4)/3) & ~(size_t)0xff;
 		struct program_net **pp_new_list;
@@ -1004,6 +997,50 @@ static uint32_t *program_code_reserve(struct program *p_program) {
 		p_program->code_alloc_count = newsz;
 	}
 	return &(p_program->p_code[p_program->code_count++]);
+}
+
+static int net_label_compare(const void *p_a, const void *p_b) {
+	struct program_net *p_n1 = *(struct program_net **)p_a;
+	struct program_net *p_n2 = *(struct program_net **)p_b;
+	if (p_n1->p_net_name == NULL && p_n2->p_net_name == NULL) {
+		if (p_n1->p_net_description == NULL && p_n2->p_net_description == NULL)
+			return 0;
+		if (p_n1->p_net_description == NULL)
+			return 1;
+		if (p_n2->p_net_description == NULL)
+			return -1;
+		return strcmp(p_n1->p_net_description, p_n2->p_net_description);
+	}
+	if (p_n1->p_net_name == NULL)
+		return 1;
+	if (p_n2->p_net_name == NULL)
+		return -1;
+	return strcmp(p_n1->p_net_name, p_n2->p_net_name);
+}
+
+static struct program_net *program_find_named_net(struct program *p_program, const char *p_name) {
+	struct program_net   dummy;
+	struct program_net  *p_dummy;
+	struct program_net **pp_found;
+
+	assert(p_name != NULL);
+
+	dummy.p_net_description = NULL;
+	dummy.p_net_name        = (char *)p_name;
+
+	p_dummy  = &dummy;
+	pp_found = (struct program_net **)bsearch
+		((const void *)&p_dummy
+		,(const void *)p_program->pp_labelled_nets
+		,p_program->named_net_count
+		,sizeof(struct program_net *)
+		,net_label_compare
+		);
+
+	if (pp_found == NULL)
+		return NULL;
+
+	return *pp_found;
 }
 
 static void move_single_cell(struct gridstate *p_gridstate, struct gridcell **pp_list_base, uint32_t idx, uint32_t *p_insidx, uint64_t compute_flag_and_net_id_bits, struct program_net *p_net) {
@@ -1086,25 +1123,6 @@ static void move_cell_and_layers(struct gridstate *p_gridstate, struct gridcell 
 	}
 }
 
-static int net_label_compare(const void *p_a, const void *p_b) {
-	struct program_net *p_n1 = *(struct program_net **)p_a;
-	struct program_net *p_n2 = *(struct program_net **)p_b;
-	if (p_n1->p_net_name == NULL && p_n2->p_net_name == NULL) {
-		if (p_n1->p_net_description == NULL && p_n2->p_net_description == NULL)
-			return 0;
-		if (p_n1->p_net_description == NULL)
-			return 1;
-		if (p_n2->p_net_description == NULL)
-			return -1;
-		return strcmp(p_n1->p_net_description, p_n2->p_net_description);
-	}
-	if (p_n1->p_net_name == NULL)
-		return 1;
-	if (p_n2->p_net_name == NULL)
-		return -1;
-	return strcmp(p_n1->p_net_name, p_n2->p_net_name);
-}
-
 #define SQRT3   (1.732050807568877f)
 #define SQRT3_4 (SQRT3*0.5f)
 
@@ -1126,6 +1144,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	p_program->substrate_area     = 0;
 	p_program->worst_logic_chain  = 0;
 	p_program->labelled_net_count = 0;
+	p_program->named_net_count    = 0;
 
 	/* no nodes, no problems. */
 	if (p_gridstate->p_root == NULL)
@@ -1432,7 +1451,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 			if (p_net->b_exists_in_a_cycle || p_net->nb_net_info_refs > 1) {
 				b_program_busted = 1;
 			} else if (p_net->p_net_description != NULL || p_net->p_net_name != NULL) {
-				program_named_net_push(p_program, p_net);
+				program_labelled_net_push(p_program, p_net);
 			}
 
 			/* Ensure that all nets which are given a name have at least one cell with merged layers. */
@@ -1463,23 +1482,29 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		}
 
 		/* sort the labelled nets. */
-		qsort(p_program->pp_labelled_nets, p_program->labelled_net_count, sizeof(struct program_net *), net_label_compare);
+		if (p_program->labelled_net_count > 0) {
+			qsort(p_program->pp_labelled_nets, p_program->labelled_net_count, sizeof(struct program_net *), net_label_compare);
 
-		/* find any duplicate net IDs and mark those nets as busted. */
-		for (i = 1; i < p_program->labelled_net_count; i++) {
-			/* as soon as we hit a null, the rest of the names are all null
-			 * (and only descriptions are present which we don't care about). */
-			if (p_program->pp_labelled_nets[i]->p_net_name == NULL)
-				break;
-			/* test for a common name */
-			if (strcmp(p_program->pp_labelled_nets[i]->p_net_name, p_program->pp_labelled_nets[i-1]->p_net_name) == 0) {
-				/* set failure bits on busted cells */
-				gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i]->net_info_cell_addr), 0)->data   |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
-				gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i-1]->net_info_cell_addr), 0)->data |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
-				b_program_busted = 1;
+			if (p_program->pp_labelled_nets[0]->p_net_name != NULL) {
+
+				/* find any duplicate net IDs and mark those nets as busted. */
+				for (i = 1; i < p_program->labelled_net_count; i++) {
+					/* as soon as we hit a null, the rest of the names are all null
+					* (and only descriptions are present which we don't care about). */
+					if (p_program->pp_labelled_nets[i]->p_net_name == NULL)
+						break;
+					/* test for a common name */
+					if (strcmp(p_program->pp_labelled_nets[i]->p_net_name, p_program->pp_labelled_nets[i-1]->p_net_name) == 0) {
+						/* set failure bits on busted cells */
+						gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i]->net_info_cell_addr), 0)->data   |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
+						gridstate_get_gridcell(p_gridstate, &(p_program->pp_labelled_nets[i-1]->net_info_cell_addr), 0)->data |= GRIDCELL_PROGRAM_DUPLICATE_NAME_BIT;
+						b_program_busted = 1;
+					}
+				}
+
+				p_program->named_net_count = i;
 			}
 		}
-
 	}
 
 #if PROGRAM_DEBUG
@@ -2616,7 +2641,7 @@ int main(int argc, char **argv) {
 #endif
 
 	// Create window with graphics context
-	GLFWwindow* window = glfwCreateWindow(1280, 720, "Dear ImGui GLFW+OpenGL3 example", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(1280, 720, "Trihexor", NULL, NULL);
 	if (window == NULL)
 		return 1;
 	glfwMakeContextCurrent(window);
@@ -2788,10 +2813,11 @@ int main(int argc, char **argv) {
 				ImGui::Text("The circuit is currently invalid and states cannot be probed.");
 			} else if (prog.labelled_net_count == 0) {
 				ImGui::Text("The circuit is valid but has no labelled nets.");
-			} else if (ImGui::BeginTable("Available Nets", 3)) {
+			} else if (ImGui::BeginTable("Available Nets", 4)) {
 				uint32_t idx;
 				ImGui::TableSetupColumn("Net Name");
 				ImGui::TableSetupColumn("Force Active");
+				ImGui::TableSetupColumn("Is Active?");
 				ImGui::TableSetupColumn("Net Description");
 				ImGui::TableHeadersRow();
 				for (idx = 0; idx < prog.labelled_net_count; idx++) {
@@ -2811,6 +2837,16 @@ int main(int argc, char **argv) {
 						} else {
 							prog.p_data_init[net_id >> 6] &= ~BIT_MASKS[net_id & 0x3F];
 						}
+					}
+					ImGui::TableNextColumn();
+					{
+						uint32_t net_id = prog.pp_labelled_nets[idx]->net_id;
+						bool     b_was_active = (prog.p_last_data[net_id >> 6] & BIT_MASKS[net_id & 0x3F]) != 0;
+						ImGui::PushID(&(prog.pp_labelled_nets[idx]));
+						ImGui::BeginDisabled();
+						ImGui::Checkbox("##statusbox", &b_was_active);
+						ImGui::EndDisabled();
+						ImGui::PopID();
 					}
 					ImGui::TableNextColumn();
 					if (prog.pp_labelled_nets[idx]->p_net_description)
