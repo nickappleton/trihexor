@@ -25,6 +25,12 @@ void name_ ## _init(struct name_ *p_tree) { \
 		p_tree->ap_roots[i] = NULL; \
 	} \
 } \
+datatype_ *name_ ## _node_get_data(struct name_ ## _node *p_node) { \
+	return &(p_node->data); \
+} \
+datatype_ *name_ ## _node_optional_get_data(struct name_ ## _node *p_node) { \
+	return (p_node == NULL) ? NULL : &(p_node->data); \
+} \
 struct name_ ## _node *name_ ## _find_insert_cb(struct name_ *p_tree, keytype_ key, struct name_ ## _node *(*p_createnode)(keytype_ key, void *p_userdata), void *p_userdata_or_node) { \
 	struct name_ ## _node **pp_node = &(p_tree->ap_roots[key & MAKE_BIT_MASK(rootbits_)]); \
 	struct name_ ## _node *p_node = *pp_node; \
@@ -46,10 +52,6 @@ struct name_ ## _node *name_ ## _find_insert_cb(struct name_ *p_tree, keytype_ k
 		} \
 	} \
 	return p_node; \
-} \
-datatype_ *name_ ## _find_insert_cb_data(struct name_ *p_tree, keytype_ key, struct name_ ## _node *(*p_createnode)(keytype_ key, void *p_userdata), void *p_userdata_or_node) { \
-	struct name_ ## _node *p_node = name_ ## _find_insert_cb(p_tree, key, p_createnode, p_userdata_or_node); \
-	return (p_node == NULL) ? NULL : &(p_node->data); \
 } \
 struct name_ ## _node *name_ ## _find_insert(struct name_ *p_tree, keytype_ key, struct name_ ## _node *p_node) { \
 	return name_ ## _find_insert_cb(p_tree, key, NULL, p_node); \
@@ -129,15 +131,6 @@ struct name_ ## _node *name_ ## _enumerator_get(struct name_ ## _enumerator *p_e
 	if (p_enumerator->stack_pos >= 0) { \
 		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
 		p_ret = p_top->pp_list[p_top->next_list_item]; \
-		name_ ## _enumerator_next(p_enumerator); \
-	} \
-	return p_ret; \
-} \
-datatype_ *name_ ## _enumerator_get_data(struct name_ ## _enumerator *p_enumerator) { \
-	datatype_ *p_ret = NULL; \
-	if (p_enumerator->stack_pos >= 0) { \
-		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
-		p_ret = &(p_top->pp_list[p_top->next_list_item]->data); \
 		name_ ## _enumerator_next(p_enumerator); \
 	} \
 	return p_ret; \
@@ -565,7 +558,7 @@ static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buf
 
 	num_total_cells = 0;
 	gridpage_lookup_enumerator_init(&enumerator, &(p_grid->pages));
-	while ((p_page = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
+	while ((p_page = gridpage_lookup_node_optional_get_data(gridpage_lookup_enumerator_get(&enumerator))) != NULL) {
 		num_total_cells += gridpage_serialise(p_page, NULL);
 	}
 
@@ -574,7 +567,7 @@ static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buf
 		p_buffer += 8;
 
 		gridpage_lookup_enumerator_init(&enumerator, &(p_grid->pages));
-		while ((p_page = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
+		while ((p_page = gridpage_lookup_node_optional_get_data(gridpage_lookup_enumerator_get(&enumerator))) != NULL) {
 			p_buffer += 16*gridpage_serialise(p_page, p_buffer);
 		}
 	}
@@ -586,12 +579,13 @@ static struct cellnetinfo_lookup_node *make_cellnetinfo_lookup_node(uint64_t key
 	struct cellnetinfo_lookup_node *p_node;
 	(void)p_context;
 	if ((p_node = (struct cellnetinfo_lookup_node *)malloc(sizeof(*p_node))) != NULL) {
+		struct cellnetinfo *p_cni = cellnetinfo_lookup_node_get_data(p_node);
 		int i;
 		for (i = 0; i < NUM_LAYERS; i++) {
-			p_node->data.aa_net_description[i][0] = '\0';
-			p_node->data.aa_net_name[i][0]        = '\0';
+			p_cni->aa_net_description[i][0] = '\0';
+			p_cni->aa_net_name[i][0]        = '\0';
 		}
-		gridaddr_from_id(&(p_node->data.position), key);
+		gridaddr_from_id(&(p_cni->position), key);
 	}
 	return p_node;
 }
@@ -599,22 +593,23 @@ static struct cellnetinfo_lookup_node *make_cellnetinfo_lookup_node(uint64_t key
 static struct cellnetinfo *gridstate_get_cellnetinfo(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
 	assert(p_page_addr->z == 0 && "cellnetinfo always must apply to layer 0");
 	return
-		cellnetinfo_lookup_find_insert_cb_data
+		cellnetinfo_lookup_node_optional_get_data(cellnetinfo_lookup_find_insert_cb
 			(&(p_grid->cellinfo)
 			,gridaddr_to_id(p_page_addr)
 			,(permit_create) ? make_cellnetinfo_lookup_node : NULL
 			,NULL
-			);
+			));
 }
 
 static struct gridpage_lookup_node *make_gridpage_lookup_node(uint64_t key, void *p_context) {
 	struct gridpage_lookup_node *p_node;
 	if ((p_node = (struct gridpage_lookup_node *)malloc(sizeof(*p_node))) != NULL) {
-		size_t   i;
-		p_node->data.p_owner = (struct gridstate *)p_context;
-		gridaddr_from_id(&(p_node->data.position), key);
+		struct gridpage *p_gp = gridpage_lookup_node_get_data(p_node);
+		int i;
+		p_gp->p_owner = (struct gridstate *)p_context;
+		gridaddr_from_id(&(p_gp->position), key);
 		for (i = 0; i < PAGE_CELL_COUNT; i++) {
-			p_node->data.data[i].data = i;
+			p_gp->data[i].data = i;
 		}
 	}
 	return p_node;
@@ -623,11 +618,11 @@ static struct gridpage_lookup_node *make_gridpage_lookup_node(uint64_t key, void
 static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
 	struct gridpage *p_ret;
 	assert(gridaddr_is_page_addr(p_page_addr));
-	p_ret = gridpage_lookup_find_insert_cb_data(&(p_grid->pages), gridaddr_to_id(p_page_addr), (permit_create) ? make_gridpage_lookup_node : NULL, (permit_create) ? p_grid : NULL);
+	p_ret = gridpage_lookup_node_optional_get_data(gridpage_lookup_find_insert_cb(&(p_grid->pages), gridaddr_to_id(p_page_addr), (permit_create) ? make_gridpage_lookup_node : NULL, (permit_create) ? p_grid : NULL));
 	if (p_ret != NULL) {
 		DEBUG_CHECK_GRIDPAGE(p_ret);
 	}
-	return p_ret;
+	return  p_ret;
 }
 
 static struct gridcell *gridstate_get_gridcell(struct gridstate *p_grid, const struct gridaddr *p_addr, int permit_create) {
@@ -1219,7 +1214,7 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 
 		num_cells = 0;
 		gridpage_lookup_enumerator_init(&enumerator, &(p_gridstate->pages));
-		while ((p_gp = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
+		while ((p_gp = gridpage_lookup_node_optional_get_data(gridpage_lookup_enumerator_get(&enumerator))) != NULL) {
 			int j;
 			for (j = 0; j < PAGE_CELLS_PER_LAYER; j++) {
 				int      l;
