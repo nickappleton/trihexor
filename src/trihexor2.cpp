@@ -9,14 +9,155 @@
 #include <GLFW/glfw3.h>
 #include <math.h>
 
+#define MAKE_BIT_MASK(nb_bit_) ((1 << (nb_bit_)) - 1)
+#define MAKE_UTREE(name_, keytype_, rootbits_, nodebits_, datatype_) \
+struct name_ ## _node { \
+	datatype_              data; \
+	keytype_               key; \
+	struct name_ ## _node *ap_ch[1 << (nodebits_)]; \
+}; \
+struct name_ { \
+	struct name_ ## _node *ap_roots[1 << (rootbits_)]; \
+}; \
+void name_ ## _init(struct name_ *p_tree) { \
+	size_t i; \
+	for (i = 0; i < (((size_t)1) << (rootbits_)); i++) { \
+		p_tree->ap_roots[i] = NULL; \
+	} \
+} \
+struct name_ ## _node *name_ ## _find_insert_cb(struct name_ *p_tree, keytype_ key, struct name_ ## _node *(*p_createnode)(keytype_ key, void *p_userdata), void *p_userdata_or_node) { \
+	struct name_ ## _node **pp_node = &(p_tree->ap_roots[key & MAKE_BIT_MASK(rootbits_)]); \
+	struct name_ ## _node *p_node = *pp_node; \
+	keytype_ keyiter = key >> (rootbits_); \
+	while (p_node != NULL) { \
+		if (p_node->key == key) \
+			return p_node; \
+		pp_node   = &(p_node->ap_ch[keyiter & MAKE_BIT_MASK(nodebits_)]); \
+		p_node    = *pp_node; \
+		keyiter >>= (nodebits_); \
+	} \
+	p_node = (p_createnode != NULL) ? p_createnode(key, p_userdata_or_node) : (struct name_ ## _node *)p_userdata_or_node; \
+	if (p_node != NULL) { \
+		size_t i; \
+		*pp_node = p_node; \
+		p_node->key = key; \
+		for (i = 0; i < (((size_t)1) << (nodebits_)); i++) { \
+			p_node->ap_ch[i] = NULL; \
+		} \
+	} \
+	return p_node; \
+} \
+datatype_ *name_ ## _find_insert_cb_data(struct name_ *p_tree, keytype_ key, struct name_ ## _node *(*p_createnode)(keytype_ key, void *p_userdata), void *p_userdata_or_node) { \
+	struct name_ ## _node *p_node = name_ ## _find_insert_cb(p_tree, key, p_createnode, p_userdata_or_node); \
+	return (p_node == NULL) ? NULL : &(p_node->data); \
+} \
+struct name_ ## _node *name_ ## _find_insert(struct name_ *p_tree, keytype_ key, struct name_ ## _node *p_node) { \
+	return name_ ## _find_insert_cb(p_tree, key, NULL, p_node); \
+} \
+struct name_ ## _node *name_ ## _remove(struct name_ *p_tree, keytype_ key) { \
+	struct name_ ## _node **pp_node = &(p_tree->ap_roots[key & MAKE_BIT_MASK(rootbits_)]); \
+	struct name_ ## _node *p_node = *pp_node; \
+	keytype_ keyiter = key >> (rootbits_); \
+	while (p_node != NULL) { \
+		if (p_node->key == key) \
+			break; \
+		pp_node   = &(p_node->ap_ch[keyiter & MAKE_BIT_MASK(nodebits_)]); \
+		p_node    = *pp_node; \
+		keyiter >>= (nodebits_); \
+	} \
+	if (p_node != NULL) { \
+		while (1 /* while not a leaf node ... */) { \
+			struct name_ ## _node *p_ch; \
+			size_t kidx, i; \
+			for (kidx = 0; kidx < (((size_t)1) << (nodebits_)); kidx++) { \
+				size_t chk = (keyiter + kidx) & MAKE_BIT_MASK(nodebits_); \
+				if (p_node->ap_ch[chk] != NULL) { \
+					kidx = chk; \
+					break; \
+				} \
+			} \
+			if (kidx >= (((size_t)1) << (nodebits_))) \
+				break; \
+			p_ch = p_node->ap_ch[kidx]; \
+			for (i = 0; i < (((size_t)1) << (nodebits_)); i++) { \
+				struct name_ ## _node *p_tmp; \
+				p_tmp             = p_node->ap_ch[i]; \
+				p_node->ap_ch[i] = p_ch->ap_ch[i]; \
+				p_ch->ap_ch[i]   = p_tmp; \
+			} \
+			*pp_node            = p_ch; \
+			pp_node             = &(p_ch->ap_ch[kidx]); \
+			p_ch->ap_ch[kidx]   = p_node; \
+			keyiter           >>= (nodebits_); \
+		} \
+		*pp_node = NULL; \
+	} \
+	return p_node; \
+} \
+struct name_ ## _enumerator_stack_item { \
+	struct name_ ## _node **pp_list; \
+	int                     next_list_item; \
+}; \
+struct name_ ## _enumerator { \
+	struct name_ ## _enumerator_stack_item a_stack[64]; \
+	int                                    stack_pos; \
+}; \
+void name_ ## _enumerator_next(struct name_ ## _enumerator *p_enumerator) { \
+	while (1) { \
+		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
+		if (p_top->next_list_item-- == 0) { \
+			p_enumerator->stack_pos--; \
+			return; \
+		} \
+		if (p_top->pp_list[p_top->next_list_item] != NULL) { \
+			p_enumerator->stack_pos++; \
+			p_enumerator->a_stack[p_enumerator->stack_pos].pp_list        = p_top->pp_list[p_top->next_list_item]->ap_ch; \
+			p_enumerator->a_stack[p_enumerator->stack_pos].next_list_item = ((int)1) << (nodebits_); \
+			continue; \
+		} \
+	} \
+} \
+struct name_ ## _node *name_ ## _enumerator_peek(struct name_ ## _enumerator *p_enumerator) { \
+	if (p_enumerator->stack_pos >= 0) { \
+		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
+		return p_top->pp_list[p_top->next_list_item]; \
+	} \
+	return NULL; \
+} \
+struct name_ ## _node *name_ ## _enumerator_get(struct name_ ## _enumerator *p_enumerator) { \
+	struct name_ ## _node *p_ret = NULL; \
+	if (p_enumerator->stack_pos >= 0) { \
+		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
+		p_ret = p_top->pp_list[p_top->next_list_item]; \
+		name_ ## _enumerator_next(p_enumerator); \
+	} \
+	return p_ret; \
+} \
+datatype_ *name_ ## _enumerator_get_data(struct name_ ## _enumerator *p_enumerator) { \
+	datatype_ *p_ret = NULL; \
+	if (p_enumerator->stack_pos >= 0) { \
+		struct name_ ## _enumerator_stack_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]); \
+		p_ret = &(p_top->pp_list[p_top->next_list_item]->data); \
+		name_ ## _enumerator_next(p_enumerator); \
+	} \
+	return p_ret; \
+} \
+void name_ ## _enumerator_init(struct name_ ## _enumerator *p_enumerator, struct name_ *p_tree) { \
+	p_enumerator->a_stack[0].pp_list        = p_tree->ap_roots; \
+	p_enumerator->a_stack[0].next_list_item = ((int)1) << (rootbits_); \
+	p_enumerator->stack_pos                 = 0; \
+	name_ ## _enumerator_next(p_enumerator); \
+}
+
+
+
+
+
+
 static void glfw_error_callback(int error, const char* description)
 {
 	fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
-
-#define CELL_LOOKUP_BITS (4)
-#define CELL_LOOKUP_NB   (1 << CELL_LOOKUP_BITS)
-#define CELL_LOOKUP_MASK (CELL_LOOKUP_NB - 1u)
 
 #define NUM_LAYERS           (3)
 #define PAGE_XY_BITS         (4)
@@ -250,21 +391,23 @@ static void rt_assert_impl(int condition, const char *p_cond_str, const char *p_
 struct gridpage {
 	struct gridcell   data[PAGE_CELL_COUNT];
 	struct gridstate *p_owner;
-	struct gridpage  *ap_lookups[CELL_LOOKUP_NB];
 	struct gridaddr   position; /* position of data[0] in the full grid  */
 	
 };
+
+MAKE_UTREE(gridpage_lookup, uint64_t, 8, 1, struct gridpage)
 
 #define MAX_NET_NAME_LENGTH (64)
 #define MAX_NET_DESCRIPTION_LENGTH (8192)
 
 struct cellnetinfo {
 	struct gridaddr     position;          /* key and full position of cell (with z==0). this cell must have the GRIDCELL_BIT_MERGED_LAYERS and GRIDCELL_NET_LABEL_BIT bits set. */
-	struct cellnetinfo *ap_lookups[CELL_LOOKUP_NB];
 	char                aa_net_name[NUM_LAYERS][MAX_NET_NAME_LENGTH];        /* unique name for the net containing this cell. */
 	char                aa_net_description[NUM_LAYERS][MAX_NET_DESCRIPTION_LENGTH]; /* description for the net which contains this cell. */
 
 };
+
+MAKE_UTREE(cellnetinfo_lookup, uint64_t, 8, 1, struct cellnetinfo)
 
 #ifndef NDEBUG
 static void verify_gridpage(struct gridpage *p_page, const char *p_file, const int line) {
@@ -282,14 +425,14 @@ static void verify_gridpage(struct gridpage *p_page, const char *p_file, const i
 #endif
 
 struct gridstate {
-	struct gridpage    *p_root;
-	struct cellnetinfo *p_cell_info;
+	struct gridpage_lookup    pages;
+	struct cellnetinfo_lookup cellinfo;
 
 };
 
 void gridstate_init(struct gridstate *p_gridstate) {
-	p_gridstate->p_root      = NULL;
-	p_gridstate->p_cell_info = NULL;
+	gridpage_lookup_init(&(p_gridstate->pages));
+	cellnetinfo_lookup_init(&(p_gridstate->cellinfo));
 }
 
 /* Converts a grid address into a unique, scrambled and invertible
@@ -303,16 +446,14 @@ static uint64_t gridaddr_to_id(const struct gridaddr *p_addr) {
 	return (umix >> 48) ^ umix;
 }
 
-#if 0
-static void id_to_xy(uint64_t id, uint32_t *p_x, uint32_t *p_y, uint32_t *p_z) {
+static void gridaddr_from_id(struct gridaddr *p_addr, uint64_t id) {
 	uint64_t umix = (id >> 48) ^ id;
 	uint64_t grp = umix*7426732773883044305ull;
-	*p_z = (uint32_t)(grp >> 62);
-	*p_y = (uint32_t)((grp >> 31) & 0x7FFFFFFF);
-	*p_x = (uint32_t)(grp & 0x7FFFFFFF);
-	assert(*p_z < 3);
+	p_addr->z = (uint32_t)(grp >> 62);
+	p_addr->y = (uint32_t)((grp >> 31) & 0x7FFFFFFF);
+	p_addr->x = (uint32_t)(grp & 0x7FFFFFFF);
+	assert(p_addr->z < 3);
 }
-#endif
 
 static void write_u32(unsigned char *p_buf, uint32_t data) {
 	p_buf[0] = data & 0xFF;
@@ -417,68 +558,14 @@ static size_t gridpage_serialise(struct gridpage *p_page, unsigned char *p_buf) 
 	return count;
 }
 
-struct gridpage_enumerator_item {
-	struct gridpage *p_page;
-	int              child_id;
-};
-
-struct gridpage_enumerator {
-	struct gridpage_enumerator_item a_stack[64];
-	int stack_pos;
-};
-
-static void push_down(struct gridpage_enumerator *p_enumerator) {
-	do {
-		struct gridpage_enumerator_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]);
-		while (p_top->child_id < CELL_LOOKUP_NB && p_top->p_page->ap_lookups[p_top->child_id] == NULL) {
-			p_top->child_id++;
-		}
-		if (p_top->child_id == CELL_LOOKUP_NB) {
-			break;
-		}
-		p_enumerator->stack_pos++;
-		p_enumerator->a_stack[p_enumerator->stack_pos].child_id = 0;
-		p_enumerator->a_stack[p_enumerator->stack_pos].p_page   = p_top->p_page->ap_lookups[p_top->child_id];
-	} while (1);
-}
-
-static void gridpage_enumerator_init(struct gridpage_enumerator *p_enumerator, struct gridpage *p_root) {
-	if (p_root == NULL) {
-		p_enumerator->stack_pos           = -1;
-	} else {
-		p_enumerator->a_stack[0].p_page   = p_root;
-		p_enumerator->a_stack[0].child_id = 0;
-		p_enumerator->stack_pos           = 0;
-		push_down(p_enumerator);
-	}
-}
-
-static struct gridpage *gridpage_enumerator_get(struct gridpage_enumerator *p_enumerator) {
-	struct gridpage                  *p_ret = NULL;
-	if (p_enumerator->stack_pos >= 0) {
-		struct gridpage_enumerator_item *p_top = &(p_enumerator->a_stack[p_enumerator->stack_pos]);
-		if (p_top->child_id == CELL_LOOKUP_NB) {
-			p_ret                    = p_top->p_page;
-			p_enumerator->stack_pos -= 1;
-		} else {
-			p_ret                    = p_top->p_page->ap_lookups[p_top->child_id];
-		}
-		if (p_enumerator->stack_pos >= 0) {
-			p_enumerator->a_stack[p_enumerator->stack_pos].child_id++;
-			push_down(p_enumerator);
-		}
-	}
-	return p_ret;
-}
-
 static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buffer) {
-	struct gridpage_enumerator  enumerator;
-	struct gridpage            *p_page;
-	uint64_t                    num_total_cells = 0;
+	struct gridpage_lookup_enumerator  enumerator;
+	struct gridpage                   *p_page;
+	uint64_t                           num_total_cells = 0;
 
 	num_total_cells = 0;
-	gridpage_enumerator_init(&enumerator, p_grid->p_root);
-	while ((p_page = gridpage_enumerator_get(&enumerator)) != NULL) {
+	gridpage_lookup_enumerator_init(&enumerator, &(p_grid->pages));
+	while ((p_page = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
 		num_total_cells += gridpage_serialise(p_page, NULL);
 	}
 
@@ -486,8 +573,8 @@ static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buf
 		write_u64(p_buffer, num_total_cells);
 		p_buffer += 8;
 
-		gridpage_enumerator_init(&enumerator, p_grid->p_root);
-		while ((p_page = gridpage_enumerator_get(&enumerator)) != NULL) {
+		gridpage_lookup_enumerator_init(&enumerator, &(p_grid->pages));
+		while ((p_page = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
 			p_buffer += 16*gridpage_serialise(p_page, p_buffer);
 		}
 	}
@@ -495,83 +582,52 @@ static size_t gridstate_serialise(struct gridstate *p_grid, unsigned char *p_buf
 	return 8 + num_total_cells*16;
 }
 
+static struct cellnetinfo_lookup_node *make_cellnetinfo_lookup_node(uint64_t key, void *p_context) {
+	struct cellnetinfo_lookup_node *p_node;
+	(void)p_context;
+	if ((p_node = (struct cellnetinfo_lookup_node *)malloc(sizeof(*p_node))) != NULL) {
+		int i;
+		for (i = 0; i < NUM_LAYERS; i++) {
+			p_node->data.aa_net_description[i][0] = '\0';
+			p_node->data.aa_net_name[i][0]        = '\0';
+		}
+		gridaddr_from_id(&(p_node->data.position), key);
+	}
+	return p_node;
+}
+
 static struct cellnetinfo *gridstate_get_cellnetinfo(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
-	struct cellnetinfo **pp_c    = &(p_grid->p_cell_info);
-	struct cellnetinfo  *p_c     = *pp_c;
-	uint32_t             page_x  = p_page_addr->x;
-	uint32_t             page_y  = p_page_addr->y;
-	uint64_t             page_id;
-	size_t               i;
-
 	assert(p_page_addr->z == 0 && "cellnetinfo always must apply to layer 0");
+	return
+		cellnetinfo_lookup_find_insert_cb_data
+			(&(p_grid->cellinfo)
+			,gridaddr_to_id(p_page_addr)
+			,(permit_create) ? make_cellnetinfo_lookup_node : NULL
+			,NULL
+			);
+}
 
-	page_id = gridaddr_to_id(p_page_addr);
-
-	while (p_c != NULL) {
-		if (p_c->position.x == page_x && p_c->position.y == page_y)
-			return p_c;
-		pp_c    = &(p_c->ap_lookups[page_id & CELL_LOOKUP_MASK]);
-		p_c     = *pp_c;
-		page_id = page_id >> CELL_LOOKUP_BITS;
+static struct gridpage_lookup_node *make_gridpage_lookup_node(uint64_t key, void *p_context) {
+	struct gridpage_lookup_node *p_node;
+	if ((p_node = (struct gridpage_lookup_node *)malloc(sizeof(*p_node))) != NULL) {
+		size_t   i;
+		p_node->data.p_owner = (struct gridstate *)p_context;
+		gridaddr_from_id(&(p_node->data.position), key);
+		for (i = 0; i < PAGE_CELL_COUNT; i++) {
+			p_node->data.data[i].data = i;
+		}
 	}
-
-	if (!permit_create)
-		return NULL;
-
-	if ((p_c = (struct cellnetinfo *)malloc(sizeof(*p_c))) == NULL)
-		return NULL;
-
-	for (i = 0; i < NUM_LAYERS; i++) {
-		p_c->aa_net_description[i][0] = '\0';
-		p_c->aa_net_name[i][0]        = '\0';
-	}
-	p_c->position.x        = page_x;
-	p_c->position.y        = page_y;
-	p_c->position.z        = 0;
-	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		p_c->ap_lookups[i] = NULL;
-
-	*pp_c = p_c;
-	return p_c;
+	return p_node;
 }
 
 static struct gridpage *gridstate_get_gridpage(struct gridstate *p_grid, const struct gridaddr *p_page_addr, int permit_create) {
-	struct gridpage **pp_c = &(p_grid->p_root);
-	struct gridpage *p_c   = *pp_c;
-	uint32_t page_x        = p_page_addr->x;
-	uint32_t page_y        = p_page_addr->y;
-	uint64_t page_id;
-	size_t   i;
-
+	struct gridpage *p_ret;
 	assert(gridaddr_is_page_addr(p_page_addr));
-
-	page_id = gridaddr_to_id(p_page_addr);
-
-	while (p_c != NULL) {
-		if (p_c->position.x == page_x && p_c->position.y == page_y)
-			return p_c;
-		pp_c    = &(p_c->ap_lookups[page_id & CELL_LOOKUP_MASK]);
-		p_c     = *pp_c;
-		page_id = page_id >> CELL_LOOKUP_BITS;
+	p_ret = gridpage_lookup_find_insert_cb_data(&(p_grid->pages), gridaddr_to_id(p_page_addr), (permit_create) ? make_gridpage_lookup_node : NULL, (permit_create) ? p_grid : NULL);
+	if (p_ret != NULL) {
+		DEBUG_CHECK_GRIDPAGE(p_ret);
 	}
-
-	if ((!permit_create) || (p_c = (struct gridpage *)malloc(sizeof(*p_c))) == NULL)
-		return NULL;
-
-	p_c->p_owner    = p_grid;
-	p_c->position.x = page_x;
-	p_c->position.y = page_y;
-	p_c->position.z = 0;
-	for (i = 0; i < CELL_LOOKUP_NB; i++)
-		p_c->ap_lookups[i] = NULL;
-	for (i = 0; i < PAGE_CELL_COUNT; i++) {
-		p_c->data[i].data = i;
-	}
-
-	DEBUG_CHECK_GRIDPAGE(p_c);
-
-	*pp_c = p_c;
-	return p_c;
+	return p_ret;
 }
 
 static struct gridcell *gridstate_get_gridcell(struct gridstate *p_grid, const struct gridaddr *p_addr, int permit_create) {
@@ -1146,10 +1202,6 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 	p_program->labelled_net_count = 0;
 	p_program->named_net_count    = 0;
 
-	/* no nodes, no problems. */
-	if (p_gridstate->p_root == NULL)
-		return 0;
-
 #if PROGRAM_DEBUG
 	printf("added %llu grid pages\n", (unsigned long long)num_grid_pages);
 #endif
@@ -1162,12 +1214,12 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		uint32_t                    max_x = 0;
 		uint32_t                    min_y = 0;
 		uint32_t                    max_y = 0;
-		struct gridpage_enumerator  enumerator;
+		struct gridpage_lookup_enumerator  enumerator;
 		struct gridpage            *p_gp;
 
 		num_cells = 0;
-		gridpage_enumerator_init(&enumerator, p_gridstate->p_root);
-		while ((p_gp = gridpage_enumerator_get(&enumerator)) != NULL) {
+		gridpage_lookup_enumerator_init(&enumerator, &(p_gridstate->pages));
+		while ((p_gp = gridpage_lookup_enumerator_get_data(&enumerator)) != NULL) {
 			int j;
 			for (j = 0; j < PAGE_CELLS_PER_LAYER; j++) {
 				int      l;
@@ -1214,6 +1266,10 @@ static int program_compile(struct program *p_program, struct gridstate *p_gridst
 		p_program->stacked_cell_count = stacked_cell_count;
 		p_program->substrate_area     = stacked_cell_count ? ((2 + max_y - min_y)*(uint64_t)(4 + 3*max_x - 3*min_x)) : 0; /* scale by for box area SQRT3_4*0.5  */
 	}
+
+	/* no nodes, no problems. */
+	if (p_program->stacked_cell_count == 0)
+		return 0;
 
 #if PROGRAM_DEBUG
 	printf("added %llu cells\n", (unsigned long long)num_cells);
@@ -2111,6 +2167,10 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		p_state->b_mouse_down_pos_changed = 0;
 	}
 
+	if (hovered && g.IO.MouseReleased[1]) {
+		ImGui::OpenPopup("CellRightClick", 0);
+	}
+
 	/* If the mouse is down, implement dragging the grid around. */
 	if (p_state->mouse_down) {
 		ImVec2 drag = iv2_sub(mprel, p_state->mouse_down_pos);
@@ -2424,7 +2484,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 	layer_edge_iterator_init(&edge_iter, bl_x, bl_y, inner_bb, radius, io.MousePos);
 	while ((p_edge_info = layer_edge_iterator_next(&edge_iter)) != NULL) {
 		/* Render edge connector hovers */
-		if (p_edge_info->b_mouse_over_either) {
+		if (hovered && p_edge_info->b_mouse_over_either) {
 			if (detail_alpha > 0) {
 				float ax = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][0];
 				float ay = AA_INNER_EDGE_CENTRE_POINTS[p_edge_info->layer][1]; /* small negative numbers */
@@ -2486,7 +2546,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 				}
 
 				/* Render the hover over the layer fusing pad. */
-				if (p_edge_info->b_mouse_in_addr) {
+				if (hovered && p_edge_info->b_mouse_in_addr) {
 					float dx = p_edge_info->cursor_relative_to_centre_x;
 					float dy = p_edge_info->cursor_relative_to_centre_y;
 					if (dx*dx + dy*dy < 0.433f*0.433f)
@@ -2496,7 +2556,7 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		}
 
 		/* only do this on the very last edge and layer of this address. We're
-		 * pooing pixels on top of everything. */
+		* pooing pixels on top of everything. */
 		if (overview_alpha > 0 && p_edge_info->edge == 2 && p_edge_info->layer == 2) {
 			struct gridcell *p_cell = gridstate_get_gridcell(p_st, &(p_edge_info->addr), 0);
 			if (p_cell != NULL) {
@@ -2568,6 +2628,16 @@ void plot_grid(struct gridstate *p_st, ImVec2 graph_size, struct plot_grid_state
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
+
+	if (ImGui::BeginPopup("CellRightClick", 0)) {
+		ImGui::Text("popup ahhahaha");
+		if (ImGui::MenuItem("Close"))
+			ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+	}
+
+
+
 }
 
 #if 0
